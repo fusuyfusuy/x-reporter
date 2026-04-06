@@ -55,6 +55,9 @@ describe('LoggerModule', () => {
     const dyn = LoggerModule.forRoot({
       NODE_ENV: 'test',
       PORT: 3000,
+      APPWRITE_ENDPOINT: 'https://appwrite.test/v1',
+      APPWRITE_PROJECT_ID: 'proj_test',
+      APPWRITE_API_KEY: 'key_test',
       APPWRITE_DATABASE_ID: 'xreporter',
       LLM_PROVIDER: 'openrouter',
       OPENROUTER_MODEL: 'anthropic/claude-sonnet-4.5',

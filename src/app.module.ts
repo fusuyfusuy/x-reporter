@@ -1,4 +1,5 @@
 import { Module, type DynamicModule } from '@nestjs/common';
+import { AppwriteModule } from './appwrite/appwrite.module';
 import { LoggerModule } from './common/logger';
 import { loadEnv } from './config/env';
 import { HealthModule } from './health/health.module';
@@ -8,7 +9,7 @@ import { HealthModule } from './health/health.module';
  *
  * Use `AppModule.forRoot()` from `main.ts` so the env is loaded once at boot
  * and passed into modules that need to be configured at construction time
- * (currently just `LoggerModule`).
+ * (`LoggerModule`, `AppwriteModule`).
  *
  * Future modules (Auth, Users, Ingestion, ...) plug in here as they land.
  */
@@ -18,7 +19,11 @@ export class AppModule {
     const env = loadEnv();
     return {
       module: AppModule,
-      imports: [LoggerModule.forRoot(env), HealthModule],
+      imports: [
+        LoggerModule.forRoot(env),
+        AppwriteModule.forRoot(env),
+        HealthModule,
+      ],
     };
   }
 }
