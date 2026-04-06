@@ -1,8 +1,14 @@
 # Swap-points
 
-x-reporter has three deliberate seams. Each is a TypeScript interface with one
+x-reporter has four deliberate seams. Each is a TypeScript interface with one
 default implementation. Adding a new impl should never require changes outside
 its own module.
+
+The first three (`XSource`, `ArticleExtractor`, `LlmProvider`) cover the
+content pipeline — where data comes *from*, how it's *cleaned*, and who
+*reasons* over it. The fourth (`XOAuthClient`) covers the sign-in handshake;
+it talks to the same vendor as `XSource` but has a different lifecycle, error
+model, and call site, so it lives behind its own port.
 
 ## 1. `XSource`
 
@@ -126,12 +132,62 @@ export function createLlmProvider(env: Env): LlmProvider {
 NestJS wires this through a custom provider so the rest of the app injects
 `LlmProvider` directly without knowing which impl is in play.
 
-## Why these three seams (and only these)
+## 4. `XOAuthClient`
 
-These are the three places where the project touches an external system whose
-vendor we don't control or whose pricing/performance might force a swap:
+Where it lives: `src/auth/x-oauth-client.ts`
+Default impl: `HttpXOAuthClient` (same file)
+
+```ts
+export interface XTokenResponse {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;     // seconds
+  scope: string;         // space-separated
+}
+
+export interface XUserInfo {
+  xUserId: string;       // X numeric user id
+  handle: string;        // without leading '@'
+}
+
+export interface XOAuthClient {
+  /** Build the URL to redirect the user to so they can authorize. */
+  buildAuthorizeUrl(input: { state: string; codeChallenge: string }): string;
+  /** Exchange an authorization code for tokens. */
+  exchangeCode(input: { code: string; codeVerifier: string }): Promise<XTokenResponse>;
+  /** Refresh an existing access token. */
+  refresh(refreshToken: string): Promise<XTokenResponse>;
+  /** Resolve the authenticated user identity from a fresh access token. */
+  getMe(accessToken: string): Promise<XUserInfo>;
+}
+```
+
+**Default impl notes:**
+- `HttpXOAuthClient` wraps Bun's native `fetch`. The auth module is the only
+  consumer; `AuthService` injects the port and never imports `fetch` directly.
+- Token endpoint responses are validated with a zod schema before being
+  surfaced to `AuthService`, so malformed payloads fail loud at the boundary.
+- `getMe` is part of the sign-in handshake — it lives on this port (rather
+  than `XSource`) so the auth module never has to import anything from the
+  ingestion module.
+
+**Other impls you could swap in:**
+- `FakeXOAuthClient` — used in unit tests; deterministic token responses, no
+  network. Lives in `src/auth/auth.service.test.ts` (and its sibling tests).
+
+## Why these four seams (and only these)
+
+The first three are the places where the project touches an external system
+whose vendor we don't control or whose pricing/performance might force a swap:
 - Where data comes *from* (`XSource`)
 - How content is *cleaned* (`ArticleExtractor`)
 - Who *reasons* over it (`LlmProvider`)
+
+`XOAuthClient` is the fourth seam because the sign-in handshake has a
+fundamentally different shape than ongoing data ingestion (it's stateless,
+runs once per session, and has its own error model around token refresh and
+`auth_expired`). Folding it into `XSource` would conflate two unrelated
+lifecycles; keeping it separate also lets tests fake the OAuth dance without
+faking the data API.
 
 Everything else (Appwrite, BullMQ, Nest) is a foundation we're committing to.
