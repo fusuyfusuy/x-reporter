@@ -64,7 +64,9 @@ export type Env = z.infer<typeof EnvSchema>;
  * Throws a descriptive Error on validation failure so the process aborts at
  * boot before binding the HTTP server.
  */
-export function loadEnv(source: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Env {
+export function loadEnv(
+  source: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): Env {
   const result = EnvSchema.safeParse(source);
   if (!result.success) {
     const issues = result.error.issues

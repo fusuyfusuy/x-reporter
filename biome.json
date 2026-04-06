@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**/*.ts", "**/*.json", "!**/node_modules", "!**/dist", "!**/coverage"]
+    "includes": [
+      "**/*.ts",
+      "**/*.json",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/coverage",
+      "!docs/swe-config.json"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -19,8 +26,12 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "complexity": {
+        "noStaticOnlyClass": "off"
+      },
       "style": {
-        "noNonNullAssertion": "warn"
+        "noNonNullAssertion": "warn",
+        "useImportType": "off"
       },
       "suspicious": {
         "noExplicitAny": "warn"
