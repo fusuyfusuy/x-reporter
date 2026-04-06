@@ -3,17 +3,21 @@ import { z } from 'zod';
 /**
  * The full env schema for x-reporter.
  *
- * Many fields are optional in the v0.1.0 scaffold milestone (#1) and will be
+ * Several fields are still optional in this milestone (#2) and will be
  * tightened to required as their owning milestones land:
- *   - Appwrite vars  -> required by issue #2
  *   - X OAuth vars   -> required by issue #3
  *   - Redis URL      -> required by issue #5
  *   - LLM vars       -> required by issue #9
  *   - Firecrawl vars -> required by issue #8
  *   - Crypto vars    -> required by issue #3
  *
- * The only effectively required vars in this milestone are PORT and NODE_ENV,
- * both of which have sensible defaults.
+ * Required as of milestone #2 (Appwrite bootstrap):
+ *   - APPWRITE_ENDPOINT
+ *   - APPWRITE_PROJECT_ID
+ *   - APPWRITE_API_KEY
+ *
+ * APPWRITE_DATABASE_ID has a default so a fresh checkout boots without
+ * having to set it.
  *
  * IMPORTANT: keep the keys here in sync with `.env.example` and
  * `docs/configuration.md`.
@@ -24,9 +28,9 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
   // ----- Appwrite (#2) -----
-  APPWRITE_ENDPOINT: z.string().url().optional(),
-  APPWRITE_PROJECT_ID: z.string().min(1).optional(),
-  APPWRITE_API_KEY: z.string().min(1).optional(),
+  APPWRITE_ENDPOINT: z.string().url(),
+  APPWRITE_PROJECT_ID: z.string().min(1),
+  APPWRITE_API_KEY: z.string().min(1),
   APPWRITE_DATABASE_ID: z.string().min(1).default('xreporter'),
 
   // ----- Redis / BullMQ (#5) -----

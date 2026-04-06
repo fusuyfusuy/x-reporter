@@ -11,8 +11,8 @@ ISO-8601 strings stored as Appwrite datetime attributes.
 |---------------------|----------|--------------------------------------------------|
 | `xUserId`           | string   | X numeric user id, unique                        |
 | `handle`            | string   | X handle without `@`                             |
-| `pollIntervalMin`   | integer  | Default 60. Min 5.                               |
-| `digestIntervalMin` | integer  | Default 1440 (daily). Min 15.                    |
+| `pollIntervalMin`   | integer? | Optional at the DB level so the documented default takes effect. Default 60. Min 5. |
+| `digestIntervalMin` | integer? | Optional at the DB level so the documented default takes effect. Default 1440 (daily). Min 15. |
 | `lastLikeCursor`    | string?  | Pagination cursor returned by X likes endpoint   |
 | `lastBookmarkCursor`| string?  | Pagination cursor for bookmarks                  |
 | `status`            | enum     | `active` \| `auth_expired` \| `paused`           |
@@ -48,7 +48,7 @@ A liked or bookmarked tweet captured from X.
 | `authorHandle` | string   | Author X handle                                         |
 | `urls`         | string[] | Expanded URLs from `entities.urls` + text scraping      |
 | `fetchedAt`    | datetime | When we ingested it                                     |
-| `enriched`     | boolean  | True once `extract-item` finishes for all `urls`        |
+| `enriched`     | boolean? | Optional at the DB level so the documented default (`false`) takes effect. True once `extract-item` finishes for all `urls`. |
 
 **Indexes**
 - `userId, xTweetId` (unique compound)
