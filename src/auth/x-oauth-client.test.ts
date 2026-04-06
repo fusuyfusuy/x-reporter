@@ -12,6 +12,7 @@ const baseConfig: XOAuthClientConfig = {
   scopes: 'tweet.read users.read offline.access',
   authorizeEndpoint: 'https://twitter.com/i/oauth2/authorize',
   tokenEndpoint: 'https://api.twitter.com/2/oauth2/token',
+  userInfoEndpoint: 'https://api.twitter.com/2/users/me',
 };
 
 interface FakeFetchCall {
@@ -152,6 +153,38 @@ describe('HttpXOAuthClient.refresh', () => {
     ]);
     const client = new HttpXOAuthClient(baseConfig, fakeImpl);
     await expect(client.refresh('expired')).rejects.toThrow(/x oauth/i);
+  });
+});
+
+describe('HttpXOAuthClient.getMe', () => {
+  it('GETs /2/users/me with a bearer token and returns id + username', async () => {
+    const { fetch: fakeImpl, calls } = fakeFetch([
+      { status: 200, body: { data: { id: '12345', username: 'fusuyfusuy' } } },
+    ]);
+    const client = new HttpXOAuthClient(baseConfig, fakeImpl);
+    const me = await client.getMe('the-access-token');
+    expect(me.xUserId).toBe('12345');
+    expect(me.handle).toBe('fusuyfusuy');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('https://api.twitter.com/2/users/me');
+    const init = calls[0]!.init!;
+    expect(init.method).toBe('GET');
+    const headers = new Headers(init.headers);
+    expect(headers.get('authorization')).toBe('Bearer the-access-token');
+    expect(headers.get('accept')).toBe('application/json');
+  });
+
+  it('throws when X returns a non-2xx response', async () => {
+    const { fetch: fakeImpl } = fakeFetch([{ status: 401, body: { error: 'unauthenticated' } }]);
+    const client = new HttpXOAuthClient(baseConfig, fakeImpl);
+    await expect(client.getMe('bad-token')).rejects.toThrow(/x users\/me/i);
+  });
+
+  it('throws when the response body fails schema validation', async () => {
+    const { fetch: fakeImpl } = fakeFetch([{ status: 200, body: { not: 'a user response' } }]);
+    const client = new HttpXOAuthClient(baseConfig, fakeImpl);
+    await expect(client.getMe('t')).rejects.toThrow();
   });
 });
 

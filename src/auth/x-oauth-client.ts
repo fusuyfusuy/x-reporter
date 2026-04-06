@@ -30,6 +30,13 @@ export interface XTokenResponse {
   scope: string;
 }
 
+export interface XUserInfo {
+  /** X numeric user id (snowflake). */
+  xUserId: string;
+  /** X handle without the leading `@`. */
+  handle: string;
+}
+
 export interface XOAuthClient {
   /** Build the URL to redirect the user to so they can authorize. */
   buildAuthorizeUrl(input: { state: string; codeChallenge: string }): string;
@@ -37,6 +44,16 @@ export interface XOAuthClient {
   exchangeCode(input: { code: string; codeVerifier: string }): Promise<XTokenResponse>;
   /** Refresh an existing access token. */
   refresh(refreshToken: string): Promise<XTokenResponse>;
+  /**
+   * Resolve the authenticated X user identity from a fresh access token.
+   * Used immediately after `exchangeCode` to bootstrap the `users` row.
+   *
+   * Lives on this port (rather than `XSource`) because it's part of the
+   * sign-in handshake, not the data-ingestion seam. Keeping it here also
+   * means the auth module never has to import anything from
+   * `src/ingestion/`, preserving directional decoupling.
+   */
+  getMe(accessToken: string): Promise<XUserInfo>;
 }
 
 export interface XOAuthClientConfig {
@@ -49,6 +66,8 @@ export interface XOAuthClientConfig {
   authorizeEndpoint: string;
   /** X token endpoint. */
   tokenEndpoint: string;
+  /** X `/2/users/me` endpoint. */
+  userInfoEndpoint: string;
 }
 
 /**
@@ -62,6 +81,17 @@ export const XTokenResponseSchema = z.object({
   refresh_token: z.string().min(1),
   expires_in: z.number().int().positive(),
   scope: z.string().min(1),
+});
+
+/**
+ * Zod schema for `GET /2/users/me` (X API v2). Only the fields the auth
+ * flow actually consumes are required; everything else is ignored.
+ */
+export const XUserInfoResponseSchema = z.object({
+  data: z.object({
+    id: z.string().min(1),
+    username: z.string().min(1),
+  }),
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -110,6 +140,23 @@ export class HttpXOAuthClient implements XOAuthClient {
       client_id: this.config.clientId,
     });
     return await this.postToken(body);
+  }
+
+  async getMe(accessToken: string): Promise<XUserInfo> {
+    const res = await this.fetchImpl(this.config.userInfoEndpoint, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`x users/me endpoint failed: ${res.status} ${text}`);
+    }
+    const json: unknown = await res.json();
+    const parsed = XUserInfoResponseSchema.parse(json);
+    return { xUserId: parsed.data.id, handle: parsed.data.username };
   }
 
   private async postToken(body: URLSearchParams): Promise<XTokenResponse> {

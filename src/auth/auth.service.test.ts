@@ -4,7 +4,7 @@ import type { TokenRecord } from '../tokens/tokens.repo';
 import type { UserRecord, UserStatus } from '../users/users.repo';
 import { AuthExpiredError, AuthService } from './auth.service';
 import { verifyCookieValue } from './cookies';
-import type { XOAuthClient, XTokenResponse } from './x-oauth-client';
+import type { XOAuthClient, XTokenResponse, XUserInfo } from './x-oauth-client';
 
 const KEY_B64 = Buffer.alloc(32, 13).toString('base64');
 const SESSION_SECRET = 'a-test-session-secret-that-is-at-least-32-chars';
@@ -64,11 +64,18 @@ class FakeXOAuthClient implements XOAuthClient {
     expiresIn: 7200,
     scope: 'tweet.read users.read offline.access',
   });
+  getMeImpl: (accessToken: string) => Promise<XUserInfo> = async () => ({
+    xUserId: '12345',
+    handle: 'fusuyfusuy',
+  });
   async exchangeCode(input: { code: string; codeVerifier: string }): Promise<XTokenResponse> {
     return this.exchangeCodeImpl(input);
   }
   async refresh(refreshToken: string): Promise<XTokenResponse> {
     return this.refreshImpl(refreshToken);
+  }
+  async getMe(accessToken: string): Promise<XUserInfo> {
+    return this.getMeImpl(accessToken);
   }
 }
 
@@ -180,24 +187,25 @@ describe('AuthService.handleCallback', () => {
   }
 
   it('on the happy path: exchanges the code, upserts the user, persists encrypted tokens, returns a session cookie', async () => {
-    const { service, users, tokens, xClient } = makeDeps({
-      xClient: {
-        exchangeCode: async () => ({
-          accessToken: 'plain-access',
-          refreshToken: 'plain-refresh',
-          expiresIn: 3600,
-          scope: 'tweet.read offline.access',
-        }),
-      },
+    const { service, users, tokens, xClient } = makeDeps({});
+    xClient.exchangeCodeImpl = async () => ({
+      accessToken: 'plain-access',
+      refreshToken: 'plain-refresh',
+      expiresIn: 3600,
+      scope: 'tweet.read offline.access',
     });
+    xClient.getMeImpl = async (accessToken) => {
+      // AuthService must resolve the X user with the freshly-minted access
+      // token, not with any leftover value.
+      expect(accessToken).toBe('plain-access');
+      return { xUserId: '12345', handle: 'fusuyfusuy' };
+    };
     const { stateCookieValue, state } = await withFreshSignedState(service);
 
-    // X echoes the user back via a userInfoLookup callback we inject.
     const result = await service.handleCallback({
       code: 'authcode',
       state,
       stateCookieValue,
-      lookupXUser: async (_accessToken) => ({ xUserId: '12345', handle: 'fusuyfusuy' }),
     });
 
     expect(result.userId).toBeDefined();
@@ -232,7 +240,6 @@ describe('AuthService.handleCallback', () => {
         code: 'authcode',
         state: 'a-different-state',
         stateCookieValue,
-        lookupXUser: async () => ({ xUserId: '12345', handle: 'h' }),
       }),
     ).rejects.toThrow(/state mismatch|invalid state/i);
   });
@@ -244,7 +251,6 @@ describe('AuthService.handleCallback', () => {
         code: 'c',
         state: 's',
         stateCookieValue: '',
-        lookupXUser: async () => ({ xUserId: '12345', handle: 'h' }),
       }),
     ).rejects.toThrow(/state cookie/i);
   });
@@ -262,7 +268,6 @@ describe('AuthService.handleCallback', () => {
         code: 'c',
         state: 'old',
         stateCookieValue: stale,
-        lookupXUser: async () => ({ xUserId: '12345', handle: 'h' }),
       }),
     ).rejects.toThrow(/expired|stale/i);
   });
@@ -279,7 +284,6 @@ describe('AuthService.handleCallback', () => {
         code: 'c',
         state: 'x',
         stateCookieValue: wronglySigned,
-        lookupXUser: async () => ({ xUserId: '12345', handle: 'h' }),
       }),
     ).rejects.toThrow(/state cookie/i);
   });

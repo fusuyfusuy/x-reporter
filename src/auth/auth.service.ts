@@ -94,13 +94,6 @@ export interface HandleCallbackInput {
   state: string;
   /** Raw value of the `xr_oauth_state` cookie sent by the browser. */
   stateCookieValue: string;
-  /**
-   * Strategy for resolving the X user identity from a fresh access token.
-   * Injected as a callback (instead of being baked into `XOAuthClient`)
-   * so this milestone can implement it inline once and revisit when
-   * `XSource` (#6) lands.
-   */
-  lookupXUser: (accessToken: string) => Promise<{ xUserId: string; handle: string }>;
 }
 
 export interface HandleCallbackResult {
@@ -186,7 +179,7 @@ export class AuthService {
     });
 
     // 2. Resolve the X user identity using the fresh access token.
-    const { xUserId, handle } = await input.lookupXUser(tokenResp.accessToken);
+    const { xUserId, handle } = await this.xClient.getMe(tokenResp.accessToken);
 
     // 3. Upsert the user.
     const user = await this.users.upsertByXUserId({ xUserId, handle });
