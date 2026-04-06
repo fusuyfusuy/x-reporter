@@ -18,8 +18,6 @@ class FakeAppwrite implements SetupClient {
       indexes: Map<string, { key: string; type: string; attributes: string[]; orders?: string[] }>;
     }
   >();
-  /** Per-(db,col,key) error queue used to inject faults. */
-  private faults = new Map<string, Error>();
   /** Number of "create" calls observed (any kind). Used to check no-op runs. */
   createCalls = 0;
   /** Per-method create-call counters for finer assertions. */
@@ -209,10 +207,6 @@ class FakeAppwrite implements SetupClient {
     return { key: params.key, type: params.type };
   }
 
-  /** Inject a non-409 error to be thrown by the next call matching `method`. */
-  injectFault(method: string, error: Error) {
-    this.faults.set(method, error);
-  }
 }
 
 function makeAppwriteError(code: number, message: string): Error {
