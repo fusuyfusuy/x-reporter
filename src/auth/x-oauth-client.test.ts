@@ -25,7 +25,7 @@ function fakeFetch(
 ): { fetch: typeof fetch; calls: FakeFetchCall[] } {
   const calls: FakeFetchCall[] = [];
   let i = 0;
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     calls.push({ url: String(input), init });
     const r = responses[i++];
     if (!r) throw new Error('fakeFetch: no more responses queued');

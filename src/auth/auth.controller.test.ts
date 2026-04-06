@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'bun:test';
-import type { Request, Response } from 'express';
 import { AuthController } from './auth.controller';
 import { AuthExpiredError, type AuthService } from './auth.service';
 
-function fakeRes(): Response & {
+interface FakeRes {
   _status?: number;
   _headers: Map<string, string | string[]>;
   _body?: unknown;
   _redirectedTo?: string;
-} {
+  setHeader(name: string, value: string | string[]): FakeRes;
+  getHeader(name: string): string | string[] | undefined;
+  status(code: number): FakeRes;
+  redirect(arg1: number | string, arg2?: string): FakeRes;
+  send(body: unknown): FakeRes;
+  json(body: unknown): FakeRes;
+}
+
+function fakeRes(): FakeRes {
   const headers = new Map<string, string | string[]>();
-  // biome-ignore lint/suspicious/noExplicitAny: minimal express Response stub
+  // biome-ignore lint/suspicious/noExplicitAny: test stub built incrementally
   const res: any = {
     _headers: headers,
     setHeader(name: string, value: string | string[]) {
@@ -54,19 +61,22 @@ function fakeRes(): Response & {
       return res;
     },
   };
-  return res;
+  return res as FakeRes;
+}
+
+interface FakeReq {
+  query: Record<string, unknown>;
+  headers: { cookie?: string | undefined } & Record<string, unknown>;
 }
 
 function fakeReq(opts: {
   query?: Record<string, string>;
   cookieHeader?: string;
-}): Request {
-  // biome-ignore lint/suspicious/noExplicitAny: minimal express Request stub
-  const req: any = {
+}): FakeReq {
+  return {
     query: opts.query ?? {},
     headers: { cookie: opts.cookieHeader },
   };
-  return req as Request;
 }
 
 describe('AuthController', () => {
@@ -142,7 +152,6 @@ describe('AuthController', () => {
         handleCallback: async () => {
           throw new Error('should not be called');
         },
-        // biome-ignore lint/suspicious/noExplicitAny: minimal mock
       } as unknown as AuthService;
       const controller = new AuthController(fakeService, {
         cookieSecure: false,

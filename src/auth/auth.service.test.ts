@@ -331,9 +331,9 @@ describe('AuthService.getValidAccessToken', () => {
       expiresAt: expiringSoon,
       scope: 'tweet.read',
     });
-    let refreshArg: string | null = null;
+    const refreshArgs: string[] = [];
     xClient.refreshImpl = async (rt) => {
-      refreshArg = rt;
+      refreshArgs.push(rt);
       return {
         accessToken: 'brand-new-access',
         refreshToken: 'brand-new-refresh',
@@ -344,7 +344,7 @@ describe('AuthService.getValidAccessToken', () => {
 
     const access = await service.getValidAccessToken(u.id);
     expect(access).toBe('brand-new-access');
-    expect(refreshArg).toBe('old-refresh');
+    expect(refreshArgs).toEqual(['old-refresh']);
 
     // The persisted row was updated and the new tokens are encrypted.
     const persisted = tokens.byUserId.get(u.id)!;

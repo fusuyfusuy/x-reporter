@@ -1,7 +1,25 @@
-import { Controller, Get, Req, Res } from '@nestjs/common';
-import type { Request, Response } from 'express';
-import { AuthExpiredError, type AuthService } from './auth.service';
+import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
+import { AuthExpiredError, AuthService } from './auth.service';
 import { type CookieOptions, parseCookies, serializeCookie } from './cookies';
+
+/**
+ * Minimal structural types for the express-style Request/Response we
+ * actually use. Declaring them here (rather than importing from `express`)
+ * avoids pulling `@types/express` into devDependencies for a handful of
+ * methods, and keeps the controller honest about the narrow surface it
+ * depends on.
+ */
+interface ExpressLikeRequest {
+  query: Record<string, unknown>;
+  headers: { cookie?: string | undefined } & Record<string, unknown>;
+}
+
+interface ExpressLikeResponse {
+  setHeader(name: string, value: string | string[]): unknown;
+  status(code: number): ExpressLikeResponse;
+  redirect(status: number, url: string): unknown;
+  send(body: unknown): unknown;
+}
 
 /**
  * HTTP surface for the X OAuth2 PKCE sign-in flow.
@@ -33,6 +51,9 @@ import { type CookieOptions, parseCookies, serializeCookie } from './cookies';
 export const STATE_COOKIE_NAME = 'xr_oauth_state';
 export const SESSION_COOKIE_NAME = 'xr_session';
 
+/** DI token for {@link AuthControllerConfig}. */
+export const AUTH_CONTROLLER_CONFIG = 'AuthControllerConfig';
+
 /**
  * Runtime config needed by the controller. Built once at boot from `Env`
  * and injected via `AuthModule.forRoot(env)`.
@@ -50,11 +71,12 @@ export interface AuthControllerConfig {
 export class AuthController {
   constructor(
     private readonly service: AuthService,
+    @Inject(AUTH_CONTROLLER_CONFIG)
     private readonly config: AuthControllerConfig,
   ) {}
 
   @Get('start')
-  start(@Res() res: Response): void {
+  start(@Res() res: ExpressLikeResponse): void {
     const { authorizeUrl, stateCookieValue } = this.service.startAuthorization();
     const stateCookie = serializeCookie(
       STATE_COOKIE_NAME,
@@ -66,7 +88,10 @@ export class AuthController {
   }
 
   @Get('callback')
-  async callback(@Req() req: Request, @Res() res: Response): Promise<void> {
+  async callback(
+    @Req() req: ExpressLikeRequest,
+    @Res() res: ExpressLikeResponse,
+  ): Promise<void> {
     const query = req.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
     const state = typeof query.state === 'string' ? query.state : '';
