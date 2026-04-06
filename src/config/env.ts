@@ -3,18 +3,24 @@ import { z } from 'zod';
 /**
  * The full env schema for x-reporter.
  *
- * Several fields are still optional in this milestone (#2) and will be
+ * Several fields are still optional in this milestone and will be
  * tightened to required as their owning milestones land:
- *   - X OAuth vars   -> required by issue #3
  *   - Redis URL      -> required by issue #5
  *   - LLM vars       -> required by issue #9
  *   - Firecrawl vars -> required by issue #8
- *   - Crypto vars    -> required by issue #3
  *
  * Required as of milestone #2 (Appwrite bootstrap):
  *   - APPWRITE_ENDPOINT
  *   - APPWRITE_PROJECT_ID
  *   - APPWRITE_API_KEY
+ *
+ * Required as of milestone #3 (X OAuth2 PKCE flow):
+ *   - X_CLIENT_ID
+ *   - X_CLIENT_SECRET
+ *   - X_REDIRECT_URI
+ *   - X_SCOPES
+ *   - TOKEN_ENC_KEY (must base64-decode to exactly 32 bytes)
+ *   - SESSION_SECRET (min 32 chars)
  *
  * APPWRITE_DATABASE_ID has a default so a fresh checkout boots without
  * having to set it.
@@ -22,6 +28,27 @@ import { z } from 'zod';
  * IMPORTANT: keep the keys here in sync with `.env.example` and
  * `docs/configuration.md`.
  */
+/**
+ * Validate that a string is base64 that decodes to exactly 32 raw bytes.
+ * Used by TOKEN_ENC_KEY so the process refuses to start with a miswired
+ * key instead of silently producing unreadable ciphertext.
+ */
+const base64Key32 = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => {
+      try {
+        return Buffer.from(value, 'base64').length === 32;
+      } catch {
+        return false;
+      }
+    },
+    {
+      message: 'TOKEN_ENC_KEY must be base64 that decodes to exactly 32 bytes',
+    },
+  );
+
 const EnvSchema = z.object({
   // ----- Server -----
   PORT: z.coerce.number().int().positive().default(3000),
@@ -37,10 +64,10 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().url().optional(),
 
   // ----- X OAuth2 (#3) -----
-  X_CLIENT_ID: z.string().min(1).optional(),
-  X_CLIENT_SECRET: z.string().min(1).optional(),
-  X_REDIRECT_URI: z.string().url().optional(),
-  X_SCOPES: z.string().min(1).optional(),
+  X_CLIENT_ID: z.string().min(1),
+  X_CLIENT_SECRET: z.string().min(1),
+  X_REDIRECT_URI: z.string().url(),
+  X_SCOPES: z.string().min(1),
 
   // ----- LLM (#9) -----
   LLM_PROVIDER: z.enum(['openrouter']).default('openrouter'),
@@ -52,8 +79,8 @@ const EnvSchema = z.object({
   FIRECRAWL_API_KEY: z.string().min(1).optional(),
 
   // ----- Crypto / sessions (#3) -----
-  TOKEN_ENC_KEY: z.string().min(1).optional(),
-  SESSION_SECRET: z.string().min(32).optional(),
+  TOKEN_ENC_KEY: base64Key32,
+  SESSION_SECRET: z.string().min(32),
 
   // ----- Worker concurrency -----
   POLL_X_CONCURRENCY: z.coerce.number().int().positive().default(5),
