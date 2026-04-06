@@ -11,9 +11,10 @@ export type AppwritePingResult =
   | { status: 'down'; error: string };
 
 /**
- * Thin wrapper around `node-appwrite`. The constructor is the only place in
- * the codebase that imports the SDK directly; everything else consumes
- * `AppwriteService` and never sees raw SDK types on its own surface.
+ * Thin wrapper around `node-appwrite`. Along with `scripts/setup-appwrite.ts`,
+ * this is one of only two places in the codebase that imports the SDK
+ * directly; everything else consumes `AppwriteService` and never sees raw
+ * SDK types on its own surface.
  *
  * Why a thin wrapper instead of a hexagonal port + adapter pair:
  * `docs/interfaces.md` is explicit that Appwrite is "a foundation we're

@@ -6,6 +6,13 @@ import { COLLECTIONS, runSetup, type SetupClient } from './setup-appwrite';
  * that the setup script touches. Used to assert idempotency without needing
  * a real Appwrite instance.
  */
+type FakeAttribute = {
+  key: string;
+  status: string;
+  required?: boolean;
+  xdefault?: number | boolean | string;
+};
+
 class FakeAppwrite implements SetupClient {
   databases = new Map<string, { name: string }>();
   collections = new Map<
@@ -14,7 +21,7 @@ class FakeAppwrite implements SetupClient {
       databaseId: string;
       collectionId: string;
       name: string;
-      attributes: Map<string, { key: string; status: string }>;
+      attributes: Map<string, FakeAttribute>;
       indexes: Map<string, { key: string; type: string; attributes: string[]; orders?: string[] }>;
     }
   >();
@@ -92,6 +99,7 @@ class FakeAppwrite implements SetupClient {
     db: string,
     col: string,
     key: string,
+    extra: { required?: boolean; xdefault?: number | boolean | string } = {},
   ) {
     this.createCalls++;
     this.callCounts[method]++;
@@ -101,7 +109,8 @@ class FakeAppwrite implements SetupClient {
       throw makeAppwriteError(409, 'Attribute already exists');
     }
     // Attributes become "available" immediately in the fake.
-    c.attributes.set(key, { key, status: 'available' });
+    const stored: FakeAttribute = { key, status: 'available', ...extra };
+    c.attributes.set(key, stored);
     return { key, status: 'available' };
   }
 
@@ -130,6 +139,7 @@ class FakeAppwrite implements SetupClient {
       params.databaseId,
       params.collectionId,
       params.key,
+      { required: params.required, xdefault: params.xdefault },
     );
   }
 
@@ -145,6 +155,7 @@ class FakeAppwrite implements SetupClient {
       params.databaseId,
       params.collectionId,
       params.key,
+      { required: params.required, xdefault: params.xdefault },
     );
   }
 
@@ -299,6 +310,50 @@ describe('runSetup', () => {
     const tokens = fake.collections.get(`${env.databaseId}/tokens`);
     const idx = tokens?.indexes.get('userId_unique');
     expect(idx?.type).toBe('unique');
+  });
+
+  it('creates pollIntervalMin, digestIntervalMin, and items.enriched as optional with documented defaults', async () => {
+    const fake = new FakeAppwrite();
+    await runSetup({ client: fake, ...env, logger: silentLogger });
+
+    const users = fake.collections.get(`${env.databaseId}/users`);
+    const poll = users?.attributes.get('pollIntervalMin');
+    expect(poll?.required).toBe(false);
+    expect(poll?.xdefault).toBe(60);
+
+    const digest = users?.attributes.get('digestIntervalMin');
+    expect(digest?.required).toBe(false);
+    expect(digest?.xdefault).toBe(1440);
+
+    const items = fake.collections.get(`${env.databaseId}/items`);
+    const enriched = items?.attributes.get('enriched');
+    expect(enriched?.required).toBe(false);
+    expect(enriched?.xdefault).toBe(false);
+  });
+
+  it('throws when waitForAttributesAvailable exceeds maxAttempts', async () => {
+    const fake = new FakeAppwrite();
+    // Force every attribute to remain in the "processing" state so the
+    // wait loop never sees them as available. The first collection
+    // processed is `users`, so the error must mention it and at least one
+    // pending key.
+    const origList = fake.listAttributes.bind(fake);
+    fake.listAttributes = async (params) => {
+      const real = await origList(params);
+      return {
+        total: real.total,
+        attributes: real.attributes.map((a) => ({ ...a, status: 'processing' })),
+      };
+    };
+
+    await expect(
+      runSetup({
+        client: fake,
+        ...env,
+        logger: silentLogger,
+        attributeWait: { maxAttempts: 2, intervalMs: 1 },
+      }),
+    ).rejects.toThrow(/users.*still not available.*xUserId/s);
   });
 
   it('digests collection has userId+createdAt desc index', async () => {

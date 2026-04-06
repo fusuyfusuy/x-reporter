@@ -137,8 +137,8 @@ export const COLLECTIONS: CollectionSpec[] = [
     attributes: [
       { kind: 'string', key: 'xUserId', size: 64, required: true },
       { kind: 'string', key: 'handle', size: 64, required: true },
-      { kind: 'integer', key: 'pollIntervalMin', required: true, min: 5, xdefault: 60 },
-      { kind: 'integer', key: 'digestIntervalMin', required: true, min: 15, xdefault: 1440 },
+      { kind: 'integer', key: 'pollIntervalMin', required: false, min: 5, xdefault: 60 },
+      { kind: 'integer', key: 'digestIntervalMin', required: false, min: 15, xdefault: 1440 },
       { kind: 'string', key: 'lastLikeCursor', size: 256, required: false },
       { kind: 'string', key: 'lastBookmarkCursor', size: 256, required: false },
       {
@@ -177,7 +177,7 @@ export const COLLECTIONS: CollectionSpec[] = [
       { kind: 'string', key: 'authorHandle', size: 64, required: true },
       { kind: 'string', key: 'urls', size: 2048, required: false, array: true },
       { kind: 'datetime', key: 'fetchedAt', required: true },
-      { kind: 'boolean', key: 'enriched', required: true, xdefault: false },
+      { kind: 'boolean', key: 'enriched', required: false, xdefault: false },
     ],
     indexes: [
       {
@@ -277,6 +277,16 @@ export interface RunSetupOptions {
   databaseId: string;
   databaseName: string;
   logger?: Logger;
+  /**
+   * Tuning knobs for `waitForAttributesAvailable`. Exposed primarily so unit
+   * tests can drive the wait loop to completion (or to its failure case)
+   * without sleeping for 15+ seconds. Production callers should leave these
+   * unset and accept the defaults.
+   */
+  attributeWait?: {
+    maxAttempts?: number;
+    intervalMs?: number;
+  };
 }
 
 /**
@@ -287,6 +297,7 @@ export interface RunSetupOptions {
 export async function runSetup(opts: RunSetupOptions): Promise<void> {
   const { client, databaseId, databaseName } = opts;
   const log = opts.logger ?? consoleLogger;
+  const wait = opts.attributeWait;
 
   // 1. Database
   await ensureDatabase(client, databaseId, databaseName, log);
@@ -294,7 +305,7 @@ export async function runSetup(opts: RunSetupOptions): Promise<void> {
   // 2. Collections + attributes + indexes
   for (const col of COLLECTIONS) {
     await ensureCollection(client, databaseId, col, log);
-    await ensureAttributes(client, databaseId, col, log);
+    await ensureAttributes(client, databaseId, col, log, wait);
     await ensureIndexes(client, databaseId, col, log);
   }
 }
@@ -363,6 +374,7 @@ async function ensureAttributes(
   databaseId: string,
   spec: CollectionSpec,
   log: Logger,
+  wait?: { maxAttempts?: number; intervalMs?: number },
 ): Promise<void> {
   const existing = await client
     .listAttributes({ databaseId, collectionId: spec.collectionId })
@@ -393,7 +405,14 @@ async function ensureAttributes(
   // tries to index them. Polls listAttributes until every documented key is
   // status === 'available'. The fake in tests reports available immediately,
   // so this loop exits on the first iteration there.
-  await waitForAttributesAvailable(client, databaseId, spec, log);
+  await waitForAttributesAvailable(
+    client,
+    databaseId,
+    spec,
+    log,
+    wait?.maxAttempts,
+    wait?.intervalMs,
+  );
 }
 
 async function createAttribute(
@@ -420,7 +439,7 @@ async function createAttribute(
         key: attr.key,
         required: attr.required,
         min: attr.min,
-        xdefault: attr.required ? undefined : attr.xdefault,
+        xdefault: attr.xdefault,
       });
       return;
     case 'boolean':
@@ -429,7 +448,7 @@ async function createAttribute(
         collectionId,
         key: attr.key,
         required: attr.required,
-        xdefault: attr.required ? undefined : attr.xdefault,
+        xdefault: attr.xdefault,
       });
       return;
     case 'datetime':
@@ -456,9 +475,9 @@ async function waitForAttributesAvailable(
   client: SetupClient,
   databaseId: string,
   spec: CollectionSpec,
-  log: Logger,
-  maxAttempts = 30,
-  intervalMs = 500,
+  _log: Logger,
+  maxAttempts: number = 30,
+  intervalMs: number = 500,
 ): Promise<void> {
   const wantedKeys = new Set(spec.attributes.map((a) => a.key));
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -474,10 +493,9 @@ async function waitForAttributesAvailable(
       const pending = Array.from(wantedKeys)
         .filter((k) => !ready.find((r) => r.key === k))
         .join(', ');
-      log.warn(
+      throw new Error(
         `attributes for "${spec.collectionId}" still not available after ${maxAttempts} attempts: ${pending}`,
       );
-      return;
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

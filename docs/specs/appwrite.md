@@ -40,7 +40,11 @@ This milestone lays the persistence foundation. It introduces:
      a no-op.
    - Exits non-zero if any non-409 error bubbles up.
 4. `HealthModule` is extended:
-   - `HealthModule` now imports `AppwriteModule`.
+   - `AppwriteModule` is registered globally from `AppModule` via
+     `AppwriteModule.forRoot(env)`, so its `AppwriteService` provider is
+     visible to every module without `HealthModule` having to import
+     `AppwriteModule` itself. `HealthController` injects `AppwriteService`
+     directly, and `HealthModule` stays env-agnostic.
    - `GET /health` calls `AppwriteService.ping()` and includes its result in
      the response under the `appwrite` key.
    - The endpoint still returns HTTP 200 even when the Appwrite ping fails;
@@ -119,13 +123,16 @@ This milestone lays the persistence foundation. It introduces:
 - [ ] `src/config/env.ts`: `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, and
       `APPWRITE_API_KEY` are required (no `.optional()`); env tests updated
       to assert that omitting them now throws.
-- [ ] `src/health/health.module.ts` imports `AppwriteModule`.
+- [ ] `src/health/health.module.ts` stays env-agnostic and does NOT import
+      `AppwriteModule`; the `AppwriteService` provider is supplied globally
+      by `AppwriteModule.forRoot(env)` registered from `AppModule`.
 - [ ] `src/health/health.controller.ts` injects `AppwriteService`, calls
       `ping()`, and returns `{ status: 'ok', appwrite: <ping result> }`.
 - [ ] `src/health/health.controller.test.ts` covers the new shape with both
       a passing and failing fake `AppwriteService`.
-- [ ] `src/app.module.ts` registers `AppwriteModule` (or wires it via the
-      `HealthModule` import chain).
+- [ ] `src/app.module.ts` registers `AppwriteModule.forRoot(env)` as a
+      global module so any controller (including `HealthController`) can
+      inject `AppwriteService` without importing `AppwriteModule` directly.
 - [ ] `package.json` version is `0.2.0`.
 - [ ] `bunx tsc --noEmit` and `bun test` are green.
 - [ ] `bunx biome lint .` reports no new findings on changed files.
