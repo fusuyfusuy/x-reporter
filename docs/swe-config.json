@@ -1,0 +1,68 @@
+{
+  "stack": {
+    "language": "TypeScript",
+    "runtime": "Bun",
+    "packageManager": "bun",
+    "test": "bun test",
+    "lint": "bunx biome lint .",
+    "format": "bunx biome format --write .",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "sourceRoot": "src",
+  "integrations": {
+    "githubIssues": true,
+    "coderabbit": false,
+    "linear": false,
+    "context7": true,
+    "autoDocs": true
+  },
+  "architecture": {
+    "rules": [
+      "Domain layer must not import from infrastructure",
+      "All external dependencies must be wrapped behind interfaces in ports/",
+      "Adapters implement port interfaces and live in adapters/",
+      "Application services orchestrate domain logic through ports, never directly through adapters",
+      "No framework-specific types (NestJS decorators, BullMQ types, Appwrite SDK types) in the domain layer"
+    ]
+  },
+  "versioning": [
+    "Bump package.json version for all changes"
+  ],
+  "directives": {
+    "implementation": [
+      "Prefer dependency injection via NestJS providers; never `new` an adapter inside domain code",
+      "All external I/O (X API, Firecrawl, OpenRouter, Appwrite, Redis) goes through a port interface",
+      "Validate all external input (HTTP, queue payloads) with zod schemas at the boundary",
+      "Use Bun's native crypto and fetch over Node polyfills where possible",
+      "Long-running work belongs in a BullMQ processor, never on the request path"
+    ],
+    "review": [
+      "Flag any direct adapter import inside domain or application code (hexagonal violation)",
+      "Flag any third-party SDK type leaking into a port interface",
+      "Flag missing zod validation on new HTTP handlers or queue processors",
+      "Flag synchronous external I/O on the HTTP request path",
+      "Flag tokens, secrets, or PII appearing in logs"
+    ],
+    "documentation": [
+      "Keep docs/ as the source of truth; update the relevant doc in the same PR as the code change",
+      "Cross-link between docs using relative paths so navigation works on GitHub",
+      "When adding a new port or adapter, update docs/interfaces.md in the same PR",
+      "When changing the Appwrite schema, update docs/data-model.md and scripts/setup-appwrite.ts together",
+      "Prefer concise tables over prose for stack/config/field listings"
+    ],
+    "delivery": [
+      "Use Conventional Commits for PR titles (feat:, fix:, chore:, docs:, test:, refactor:)",
+      "Each PR closes exactly one milestone issue from docs/implementation-plan.md",
+      "Never force-push to main; never merge without green CI",
+      "PR body must include an Acceptance criteria checklist mirroring the linked issue",
+      "Bump package.json version in the same PR as the change (matches versioning rule)"
+    ],
+    "triage": [
+      "Branch names: feat/<short-slug>, fix/<short-slug>, chore/<short-slug>, docs/<short-slug>",
+      "One milestone issue = one branch = one PR; do not bundle milestones",
+      "If a triaged task touches a port interface, classify as feat even if the change looks small",
+      "If scope creeps beyond the linked milestone issue, stop and split into a new issue rather than expanding",
+      "Defer anything in the v1 out-of-scope list in docs/architecture.md — open a follow-up issue, do not implement"
+    ]
+  }
+}
