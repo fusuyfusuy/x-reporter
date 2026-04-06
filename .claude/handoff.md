@@ -1,47 +1,61 @@
 ---
-trigger: "GitHub issue #1 — chore: scaffold Bun + NestJS project. Lay down the project skeleton: bun init, NestJS with @nestjs/platform-express, src/main.ts boots on PORT, src/config/env.ts validates env via zod, src/common/logger.ts wires nestjs-pino, GET /health returns {status:'ok'}, bun test passes a placeholder, tsconfig/.gitignore/.env.example committed."
+trigger: "GitHub issue #2 — feat(appwrite): SDK wrapper + collection bootstrap. Add AppwriteModule + AppwriteService wrapping node-appwrite with typed helpers, idempotent scripts/setup-appwrite.ts that creates database/collections/attributes/indexes from docs/data-model.md, and extend GET /health to also ping Appwrite."
 type: feat
-branch: feat/scaffold-nest
+branch: feat/appwrite-bootstrap
 base-branch: main
 created: 2026-04-06
 version-bump: minor
 ---
 
 ## Related Files
-None — greenfield. Only `docs/` and `docs/swe-config.json` exist in the repo.
+- src/health/health.controller.ts — extend with Appwrite ping
+- src/health/health.module.ts — wire AppwriteModule
+- src/app.module.ts — register AppwriteModule
+- src/config/env.ts — tighten APPWRITE_* vars from optional → required
+- .env.example — already has Appwrite vars (no change expected)
+
+New files to create:
+- src/appwrite/appwrite.module.ts
+- src/appwrite/appwrite.service.ts
+- src/appwrite/appwrite.service.test.ts
+- scripts/setup-appwrite.ts
 
 ## Relevant Docs
-- docs/architecture.md — full stack, module layout, data flow
-- docs/configuration.md — env vars, zod validation, local dev quickstart, .env.example contents
-- docs/implementation-plan.md — milestone #1 acceptance criteria
-- docs/swe-config.json — stack: Bun + TypeScript, biome lint/format, tsc typecheck, hexagonal architecture rules
+- docs/data-model.md — authoritative schema for 5 collections (users, tokens, items, articles, digests) with fields and indexes
+- docs/configuration.md — APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_DATABASE_ID env vars
+- docs/architecture.md — module layout and persistence positioning
+- docs/swe-config.json — hexagonal: no Appwrite SDK types in domain layer; wrap behind port-shaped interface
+- docs/implementation-plan.md#2 — milestone #2 acceptance criteria
 
 ## Related Issues
-- #1 chore: scaffold Bun + NestJS project (open) — this issue
-- #2–#13 (open) — all downstream milestones depend on this scaffold
+- #2 feat(appwrite): SDK wrapper + collection bootstrap (open) — this issue
+- #1 (merged) — provides the Bun + NestJS + zod env scaffold
+- #3, #4, #5, #6, #7, #8, #11 — all consume the persistence layer added here
 
 ## Scope
-Bootstrap the x-reporter project skeleton so all subsequent milestones have a working Bun + NestJS foundation to build on.
+Build the Appwrite persistence foundation: a Nest module + service that wraps `node-appwrite` with typed helpers, plus an idempotent bootstrap script that materializes the full schema in a fresh Appwrite project.
 
-**Acceptance criteria (from issue #1):**
-- [ ] `bun init` complete; `package.json` configured for Bun + Nest
-- [ ] NestJS installed with `@nestjs/platform-express`
-- [ ] `src/main.ts` boots a Nest app on `PORT`
-- [ ] `src/config/env.ts` validates env via zod, fails fast on bad config
-- [ ] `src/common/logger.ts` wires `nestjs-pino`
-- [ ] `GET /health` returns `{ status: 'ok' }` (subsystem checks added in later issues)
-- [ ] `bun test` runs and passes a placeholder test
-- [ ] `tsconfig.json`, `.gitignore`, `.env.example` committed
+**Acceptance criteria (from issue #2):**
+- [ ] `AppwriteModule` + `AppwriteService` wrap `node-appwrite` with typed helpers
+- [ ] `scripts/setup-appwrite.ts` is idempotent and creates database, all collections, attributes, and indexes from `docs/data-model.md`
+- [ ] Re-running the script after a clean run is a no-op (no errors, no duplicate indexes)
+- [ ] `/health` now also pings Appwrite
 
-**Out of scope (deferred to later issues):**
-- Appwrite wiring (#2)
-- OAuth (#3), /me endpoints (#4), queues (#5), ingestion (#6+), workers, digest graph
-- Subsystem health checks (Redis/Appwrite pings) — only stub `{status:'ok'}` for now
-- docker-compose (#13)
+**Schema to materialize (from docs/data-model.md):**
+- Database id: `xreporter`
+- Collections: `users`, `tokens`, `items`, `articles`, `digests`
+- All fields, types, and indexes per the doc tables
+- Compound + unique indexes (e.g., `users.xUserId` unique, `items.userId+xTweetId` unique)
+
+**Out of scope (deferred):**
+- Token encryption helpers (#3 owns AES-GCM crypto)
+- OAuth flows (#3)
+- Any data writes to collections beyond what the bootstrap script needs
+- Migration tooling beyond idempotency (rotation, downgrades, etc.)
 
 **Architecture notes:**
-- Hexagonal: domain code must not import infrastructure; ports/adapters separation enforced per `docs/swe-config.json`
-- Validate all external input with zod at boundaries
-- Use Bun's native crypto/fetch over Node polyfills where possible
-- Lint: `bunx biome lint .` / Format: `bunx biome format --write .` / Typecheck: `bunx tsc --noEmit` / Test: `bun test`
-- Bump `package.json` version in the same PR (versioning rule). Since this PR creates `package.json`, set initial version to `0.1.0`.
+- Hexagonal: Appwrite SDK types must NOT leak into domain code. `AppwriteService` is the adapter; downstream feature modules consume it through typed helpers, not raw SDK objects.
+- `APPWRITE_*` env vars currently optional in `src/config/env.ts` — tighten to required as part of this issue.
+- `/health` Appwrite ping should be a lightweight call (e.g., `databases.get(databaseId)`) wrapped in a try/catch returning `{ appwrite: 'ok' | 'down' }`.
+- Idempotency strategy for setup script: list existing collections/attributes/indexes and create only what's missing. Treat 409 (already exists) as success.
+- Bump `package.json` minor: `0.1.0` → `0.2.0`.
