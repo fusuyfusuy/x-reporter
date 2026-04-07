@@ -56,9 +56,10 @@ function makeFakeRepo(initial: UserRecord[] = []): {
       }
       const existing = state.records.get(id);
       if (!existing) {
-        const err = new Error('not found') as Error & { code: number };
-        err.code = 404;
-        throw err;
+        // Mirrors the real repo's contract: "row gone" returns `null`,
+        // not throws. Lets the service map the concurrent-delete race
+        // to UserNotFoundError → 404 instead of leaking a 500.
+        return null;
       }
       const next: UserRecord = { ...existing, ...patch };
       state.records.set(id, next);
@@ -203,5 +204,41 @@ describe('UsersService.updateCadence', () => {
     await expect(
       service.updateCadence('u_missing', { pollIntervalMin: 10 }),
     ).rejects.toBeInstanceOf(UserNotFoundError);
+  });
+
+  it('throws UserNotFoundError when the row is deleted between pre-read and updateCadence (race window)', async () => {
+    // The pre-read in `updateCadence` is a cheap optimization, not a
+    // synchronization primitive — there is a real time window where a
+    // concurrent admin delete (or another tab calling DELETE /me in
+    // #11) can land between `findById` and `updateCadence`. The repo's
+    // updateDocument would surface that as a raw Appwrite 404, and
+    // without explicit handling the controller would map it to a 500
+    // instead of the documented `404 not_found`. We simulate the race
+    // by deleting the row from the fake repo state mid-flight via a
+    // findById hook that vanishes the record after returning it once.
+    const { repo, state: repoState } = makeFakeRepo([baseRecord]);
+    const { schedule, state: scheduleState } = makeFakeSchedule();
+
+    // Wrap the existing fake's findById so the row disappears the
+    // moment the service is done reading it. The next call to
+    // updateCadence then sees an empty Map and returns null (the
+    // documented "row gone" signal), which the service must map to
+    // UserNotFoundError.
+    const originalFindById = repo.findById.bind(repo);
+    repo.findById = async (id: string) => {
+      const result = await originalFindById(id);
+      repoState.records.delete(id);
+      return result;
+    };
+
+    const service = new UsersService(repo, schedule);
+    await expect(
+      service.updateCadence('u_abc', { pollIntervalMin: 30 }),
+    ).rejects.toBeInstanceOf(UserNotFoundError);
+
+    // The schedule sync must NOT have run — there is no row to
+    // schedule jobs against, and #5's BullMQ implementation would
+    // otherwise leak a job for a deleted user.
+    expect(scheduleState.calls).toEqual([]);
   });
 });

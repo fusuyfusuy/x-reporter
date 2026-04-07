@@ -50,6 +50,16 @@ import type { SessionCookiePayload } from '../auth/auth.service';
 export interface SessionGuardConfig {
   /** HMAC-SHA256 secret used to verify the session cookie. */
   sessionSecret: string;
+  /**
+   * Maximum age (in seconds) of an `xr_session` cookie before the
+   * guard rejects it as expired. Must match the `Max-Age` value
+   * `AuthController` sets on the `Set-Cookie` response (and the
+   * `SESSION_COOKIE_MAX_AGE_SEC` constant exported by `AuthModule`),
+   * so the signing and verifying sides agree on a single lifetime.
+   * Without a server-side check a stolen cookie could outlive the
+   * browser's `Max-Age` window indefinitely.
+   */
+  sessionMaxAgeSec: number;
 }
 
 /** DI token for {@link SessionGuardConfig}. */
@@ -118,7 +128,41 @@ export class SessionGuard implements CanActivate {
       // string id to the request.
       throw new UnauthorizedException(unauthorizedBody());
     }
+    // Server-side expiry check. `AuthService` writes `issuedAt` as
+    // `Date.now()` (epoch ms) when minting the session cookie, and
+    // sets `Max-Age = sessionMaxAgeSec` on the `Set-Cookie` response
+    // so well-behaved browsers stop sending the cookie after that
+    // window. But the browser's `Max-Age` is purely advisory: a
+    // stolen cookie could be replayed indefinitely without this
+    // check. We treat any of the following as expired/invalid:
+    //
+    //   - missing `issuedAt` or non-finite (e.g. tampered to bypass)
+    //   - in the future by more than the configured skew (clock
+    //     drift between issuer and verifier — we allow a small
+    //     forward window so test fixtures stamped one tick ahead
+    //     don't 401)
+    //   - older than `sessionMaxAgeSec`
+    //
+    // Failure collapses to the same `unauthorized` envelope as every
+    // other 401 path so clients see one shape.
+    if (typeof payload.issuedAt !== 'number' || !Number.isFinite(payload.issuedAt)) {
+      throw new UnauthorizedException(unauthorizedBody());
+    }
+    const ageMs = Date.now() - payload.issuedAt;
+    const maxAgeMs = this.config.sessionMaxAgeSec * 1000;
+    if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > maxAgeMs) {
+      throw new UnauthorizedException(unauthorizedBody());
+    }
     req.user = { id: payload.userId };
     return true;
   }
 }
+
+/**
+ * Allow the verifier's clock to be up to 5 seconds behind the issuer's
+ * before rejecting an `issuedAt` that appears to be in the future. The
+ * issuer is the same process in production but tests sometimes mint
+ * cookies with `Date.now() + 1` to lock specific behavior; this skew
+ * keeps the guard from being a flaky-test source.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 5_000;

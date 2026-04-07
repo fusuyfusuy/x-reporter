@@ -1,4 +1,5 @@
 import { type DynamicModule, Module } from '@nestjs/common';
+import { SESSION_COOKIE_MAX_AGE_SEC } from '../auth/auth.module';
 import {
   SESSION_GUARD_CONFIG,
   SessionGuard,
@@ -42,6 +43,10 @@ export class UsersModule {
   static forRoot(env: Env): DynamicModule {
     const sessionGuardConfig: SessionGuardConfig = {
       sessionSecret: env.SESSION_SECRET,
+      // Pinned to the same constant `AuthModule` uses on the signing
+      // side so the verifier can never disagree with the issuer about
+      // how long an `xr_session` cookie is valid for.
+      sessionMaxAgeSec: SESSION_COOKIE_MAX_AGE_SEC,
     };
 
     return {

@@ -127,6 +127,10 @@ clients always see numbers, never `undefined`.
 
 ## Acceptance Criteria
 
+- [ ] Spec stays in sync with the API reference at
+  [`docs/api.md#me`](../api.md#me) — the request/response shapes,
+  status codes, and failure modes documented there are the contract
+  this milestone implements.
 - [ ] `GET /me` returns the authenticated user's profile + cadence in
   the documented shape.
 - [ ] `PATCH /me` accepts `pollIntervalMin` and `digestIntervalMin`,

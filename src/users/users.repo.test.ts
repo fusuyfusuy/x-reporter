@@ -323,6 +323,29 @@ describe('UsersRepo.findById', () => {
     expect((found as UserRecord).pollIntervalMin).toBeUndefined();
     expect((found as UserRecord).digestIntervalMin).toBeUndefined();
   });
+
+  it('throws on a stored pollIntervalMin below the documented minimum', async () => {
+    // Defense against hand-edited rows. The HTTP zod schema enforces
+    // `>= 5` on writes, but a value of 0 (or negative) flowing through
+    // the read path would be served from `GET /me` and break the
+    // contract clients are promised. Failing loudly here is preferable
+    // to silently shipping a bad value.
+    const { repo, db } = makeRepo();
+    const created = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const stored = db.docs.get(created.id);
+    if (!stored) throw new Error('seeded row missing');
+    stored.pollIntervalMin = 0;
+    await expect(repo.findById(created.id)).rejects.toThrow(/out-of-range/);
+  });
+
+  it('throws on a stored digestIntervalMin below the documented minimum', async () => {
+    const { repo, db } = makeRepo();
+    const created = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const stored = db.docs.get(created.id);
+    if (!stored) throw new Error('seeded row missing');
+    stored.digestIntervalMin = 14;
+    await expect(repo.findById(created.id)).rejects.toThrow(/out-of-range/);
+  });
 });
 
 describe('UsersRepo.updateCadence', () => {
@@ -330,19 +353,20 @@ describe('UsersRepo.updateCadence', () => {
     const { repo } = makeRepo();
     const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
     const updated = await repo.updateCadence(u.id, { pollIntervalMin: 30 });
-    expect(updated.id).toBe(u.id);
-    expect(updated.pollIntervalMin).toBe(30);
+    expect(updated).not.toBeNull();
+    expect((updated as UserRecord).id).toBe(u.id);
+    expect((updated as UserRecord).pollIntervalMin).toBe(30);
     // Untouched fields preserved.
-    expect(updated.xUserId).toBe('12345');
-    expect(updated.handle).toBe('h');
-    expect(updated.status).toBe('active');
+    expect((updated as UserRecord).xUserId).toBe('12345');
+    expect((updated as UserRecord).handle).toBe('h');
+    expect((updated as UserRecord).status).toBe('active');
   });
 
   it('writes digestIntervalMin and returns the updated record', async () => {
     const { repo } = makeRepo();
     const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
     const updated = await repo.updateCadence(u.id, { digestIntervalMin: 720 });
-    expect(updated.digestIntervalMin).toBe(720);
+    expect((updated as UserRecord).digestIntervalMin).toBe(720);
   });
 
   it('writes both fields when both are supplied', async () => {
@@ -352,8 +376,8 @@ describe('UsersRepo.updateCadence', () => {
       pollIntervalMin: 15,
       digestIntervalMin: 60,
     });
-    expect(updated.pollIntervalMin).toBe(15);
-    expect(updated.digestIntervalMin).toBe(60);
+    expect((updated as UserRecord).pollIntervalMin).toBe(15);
+    expect((updated as UserRecord).digestIntervalMin).toBe(60);
   });
 
   it('leaves an unspecified field untouched on a partial patch', async () => {
@@ -365,19 +389,26 @@ describe('UsersRepo.updateCadence', () => {
     const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
     await repo.updateCadence(u.id, { pollIntervalMin: 10, digestIntervalMin: 30 });
     const after = await repo.updateCadence(u.id, { pollIntervalMin: 99 });
-    expect(after.pollIntervalMin).toBe(99);
-    expect(after.digestIntervalMin).toBe(30);
+    expect((after as UserRecord).pollIntervalMin).toBe(99);
+    expect((after as UserRecord).digestIntervalMin).toBe(30);
     // Sanity-check the underlying doc — confirms updateCadence didn't
     // write a literal `undefined` for digestIntervalMin.
     const stored = db.docs.get(u.id);
     expect(stored?.digestIntervalMin).toBe(30);
   });
 
-  it('throws when the user does not exist', async () => {
+  it('returns null when the user does not exist (concurrent-delete race)', async () => {
+    // Mirrors `findById` / `findByXUserId` semantics: "row gone" is a
+    // documented application state, not an exceptional condition. The
+    // service maps the null to `UserNotFoundError` so the controller
+    // can answer `404 not_found` instead of leaking a 500. Without
+    // this branch a user deleted between session-cookie issue and
+    // PATCH would surface as a generic upstream error.
     const { repo } = makeRepo();
-    await expect(
-      repo.updateCadence('does-not-exist', { pollIntervalMin: 10 }),
-    ).rejects.toThrow();
+    const result = await repo.updateCadence('does-not-exist', {
+      pollIntervalMin: 10,
+    });
+    expect(result).toBeNull();
   });
 
   it('rejects an empty patch (no fields supplied)', async () => {

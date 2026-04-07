@@ -170,7 +170,9 @@ export class UsersRepo {
   }
 
   /**
-   * Update one or both cadence fields. Returns the post-update record.
+   * Update one or both cadence fields. Returns the post-update record,
+   * or `null` if the row was deleted between the caller's pre-read and
+   * this update.
    *
    * Only the keys explicitly present in `patch` are forwarded to
    * Appwrite — passing `undefined` for the unspecified field would
@@ -181,11 +183,18 @@ export class UsersRepo {
    * the only check the repo itself performs is the empty-patch guard,
    * so a misuse from another caller fails loud instead of issuing a
    * pointless write.
+   *
+   * Returning `null` (rather than throwing the raw Appwrite 404)
+   * mirrors the convention `findById` and `findByXUserId` already use:
+   * "row gone" is a documented application state, not an exceptional
+   * condition. Lets `UsersService` map the concurrent-delete race
+   * (user deleted between session-cookie issue and PATCH) to the
+   * documented `404 not_found` instead of a 500.
    */
   async updateCadence(
     userId: string,
     patch: UpdateCadenceInput,
-  ): Promise<UserRecord> {
+  ): Promise<UserRecord | null> {
     const data: Record<string, unknown> = {};
     if (patch.pollIntervalMin !== undefined) {
       data.pollIntervalMin = patch.pollIntervalMin;
@@ -196,13 +205,18 @@ export class UsersRepo {
     if (Object.keys(data).length === 0) {
       throw new Error('updateCadence called with empty patch');
     }
-    const updated = await this.db.updateDocument({
-      databaseId: this.databaseId,
-      collectionId: COLLECTION_ID,
-      documentId: userId,
-      data,
-    });
-    return toUserRecord(updated);
+    try {
+      const updated = await this.db.updateDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId: userId,
+        data,
+      });
+      return toUserRecord(updated);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
   }
 
   /**
@@ -298,6 +312,20 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
   };
 }
 
+/**
+ * Minimum allowed values for the cadence fields, mirrored from
+ * `data-model.md` and the zod schema in `users.controller.ts`. Stored
+ * here so a hand-edited (or otherwise corrupt) row carrying e.g. a
+ * `pollIntervalMin` of `0` can't smuggle past the read path and end
+ * up in `GET /me` — clients are promised values that satisfy these
+ * constraints, regardless of how the row was written. Keys not in
+ * this map are not range-checked.
+ */
+const CADENCE_MINIMUMS: Record<string, number> = {
+  pollIntervalMin: 5,
+  digestIntervalMin: 15,
+};
+
 function optionalIntegerField(
   doc: Record<string, unknown> & { $id: string },
   key: string,
@@ -306,6 +334,12 @@ function optionalIntegerField(
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new Error(`users row ${doc.$id} has non-integer ${key}: ${String(value)}`);
+  }
+  const min = CADENCE_MINIMUMS[key];
+  if (min !== undefined && value < min) {
+    throw new Error(
+      `users row ${doc.$id} has out-of-range ${key}: ${String(value)} (min ${min})`,
+    );
   }
   return value;
 }

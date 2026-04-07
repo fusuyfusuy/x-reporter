@@ -29,6 +29,7 @@ import { SessionGuard } from './session.guard';
  */
 
 const SECRET = 'a-test-session-secret-at-least-32-chars-long';
+const MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days, matches SESSION_COOKIE_MAX_AGE_SEC
 
 interface FakeReqHeaders {
   cookie?: string;
@@ -53,7 +54,7 @@ function makeContext(req: FakeReq): ExecutionContext {
 }
 
 function makeGuard(): SessionGuard {
-  return new SessionGuard({ sessionSecret: SECRET });
+  return new SessionGuard({ sessionSecret: SECRET, sessionMaxAgeSec: MAX_AGE_SEC });
 }
 
 function mintSessionCookieValue(userId: string): string {
@@ -200,6 +201,84 @@ describe('SessionGuard', () => {
         },
       };
       expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+    });
+
+    it('throws Unauthorized when issuedAt is missing from the payload', () => {
+      // A correctly-signed payload that lacks `issuedAt` entirely.
+      // The guard cannot enforce session expiry on a cookie that
+      // doesn't carry an issue time, so this must collapse to 401
+      // rather than be silently accepted with no expiry.
+      const guard = makeGuard();
+      const value = signCookieValue({ userId: 'u_abc' }, SECRET);
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+    });
+
+    it('throws Unauthorized when issuedAt is the wrong type', () => {
+      const guard = makeGuard();
+      const value = signCookieValue(
+        { userId: 'u_abc', issuedAt: 'yesterday' },
+        SECRET,
+      );
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+    });
+
+    it('throws Unauthorized when the session is older than sessionMaxAgeSec', () => {
+      // Mint a cookie with an `issuedAt` that's exactly the configured
+      // max age + 1 second in the past. The signature is valid, the
+      // payload is well-formed, the only thing wrong is that the
+      // session lifetime has elapsed — server-side expiry must reject
+      // it instead of trusting the browser to have honored Max-Age.
+      const guard = makeGuard();
+      const expiredIssuedAt = Date.now() - (MAX_AGE_SEC * 1000 + 1000);
+      const value = signCookieValue(
+        { userId: 'u_abc', issuedAt: expiredIssuedAt },
+        SECRET,
+      );
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expectUnauthorizedEnvelope(() => guard.canActivate(makeContext(req)));
+      expect(req.user).toBeUndefined();
+    });
+
+    it('throws Unauthorized when issuedAt is far in the future (beyond clock skew tolerance)', () => {
+      // A payload claiming to be from 1 hour in the future. The 5s
+      // skew tolerance allows tiny clock drift but not this — far-
+      // future timestamps are either tampered or from a clock that's
+      // so wrong that nothing the cookie carries is trustworthy.
+      const guard = makeGuard();
+      const futureIssuedAt = Date.now() + 60 * 60 * 1000;
+      const value = signCookieValue(
+        { userId: 'u_abc', issuedAt: futureIssuedAt },
+        SECRET,
+      );
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('expiry edge cases', () => {
+    it('accepts a session that is exactly 1 second younger than the max age', () => {
+      // The boundary case: sessions within the window should still
+      // work right up to the moment of expiry. Without this assertion
+      // an off-by-one in the comparison (`<` vs `<=`) could quietly
+      // log everyone out one tick early.
+      const guard = makeGuard();
+      const issuedAt = Date.now() - (MAX_AGE_SEC * 1000 - 1000);
+      const value = signCookieValue({ userId: 'u_abc', issuedAt }, SECRET);
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expect(guard.canActivate(makeContext(req))).toBe(true);
+      expect(req.user?.id).toBe('u_abc');
     });
   });
 });

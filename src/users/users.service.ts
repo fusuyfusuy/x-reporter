@@ -135,7 +135,16 @@ export class UsersService {
     //    controller maps an unknown throw to 500 and we deliberately
     //    do NOT trigger the schedule sync, because no new cadence
     //    actually landed.
+    //
+    //    `updateCadence` returns `null` when the row vanished between
+    //    our pre-read and this write — that's the concurrent-delete
+    //    race window, not an Appwrite outage. Map it to the same
+    //    `UserNotFoundError` the pre-read already uses so the
+    //    controller still answers `404 not_found` instead of falling
+    //    through to a 500. Without this branch, deleting a user
+    //    mid-PATCH would surface as a generic upstream error.
     const updated = await this.users.updateCadence(userId, patch);
+    if (!updated) throw new UserNotFoundError(userId);
 
     // 2. Register the repeatable jobs against the new cadence. A
     //    failure here is wrapped in ScheduleSyncError so the
@@ -145,10 +154,16 @@ export class UsersService {
     try {
       await this.schedule.upsertJobsForUser(userId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // Log the full error (not just `message`) so pino captures the
+      // stack trace and any extra adapter context — without it,
+      // production 502s are hard to root-cause from logs alone, and
+      // the controller deliberately strips the message before it
+      // reaches the client to avoid leaking adapter internals.
       this.logger.warn(
-        `schedule.upsertJobsForUser failed for ${userId}: ${message}`,
+        { err },
+        `schedule.upsertJobsForUser failed for ${userId}`,
       );
+      const message = err instanceof Error ? err.message : String(err);
       throw new ScheduleSyncError(
         `schedule sync failed for user ${userId}: ${message}`,
       );
