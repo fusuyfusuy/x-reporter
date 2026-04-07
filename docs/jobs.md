@@ -17,19 +17,43 @@ returns.
 `ScheduleService.upsertJobsForUser(userId)` is called when:
 - A user completes OAuth (`/auth/x/callback`).
 - A user changes cadence (`PATCH /me`).
-- A user is unpaused.
+- A user is unpaused (future).
 
-It registers two repeatable jobs per user, keyed by stable BullMQ `jobId`s so
-re-registering is idempotent:
+It registers two repeatable jobs per user, keyed by stable BullMQ
+**job scheduler ids** so re-registering is idempotent:
 
-| jobId pattern                | Queue         | Interval                       |
+| Scheduler id                 | Queue         | Interval                       |
 |------------------------------|---------------|--------------------------------|
 | `user:{userId}:poll`         | `poll-x`      | `user.pollIntervalMin` minutes |
 | `user:{userId}:digest`       | `build-digest`| `user.digestIntervalMin` minutes |
 
-When cadence changes, `upsertJobsForUser` removes the old repeatable entry
-(via `queue.removeRepeatableByKey`) and adds the new one. When a user is
-deleted or marked `auth_expired`, both repeatable entries are removed.
+`ScheduleService` uses BullMQ 5.x's **Job Scheduler API**
+(`queue.upsertJobScheduler(id, repeatOpts, template)`), not the older
+`addRepeatable` / `removeRepeatableByKey` pair. The newer API is the
+"replace on cadence change" semantic the project needs out of the box:
+re-upserting with the same scheduler id but a different `every` value
+leaves exactly one entry behind, not two. The older `removeRepeatableByKey`
+path is deprecated in BullMQ 5.x and slated for removal in 6.
+
+The cadence interval falls back to the documented defaults
+(`DEFAULT_POLL_INTERVAL_MIN = 60`, `DEFAULT_DIGEST_INTERVAL_MIN = 1440`,
+imported from `src/users/cadence.constants.ts`) when the user row has no
+cadence value set. The scheduler id is stable across cadence changes —
+the `every` value changes, the id does not — which is why a re-upsert
+overwrites instead of duplicating.
+
+`removeJobsForUser(userId)` calls `queue.removeJobScheduler(id)` for both
+schedulers. The remove call is idempotent: BullMQ returns `false` for
+unknown ids without throwing, so calling `removeJobsForUser` for a user
+who never had repeatables is a no-op. This is what makes
+`AuthService.failAuth` safe to call unconditionally.
+
+`removeJobsForUser` is called from:
+- `AuthService.failAuth(userId)`, after a successful
+  `setStatus('auth_expired')` transition. A queue outage during removal
+  is logged at `warn` and swallowed so it never masks the original
+  auth failure.
+- (reserved) a future user-delete endpoint.
 
 ## Job payloads
 

@@ -28,7 +28,8 @@ machine that calls a pluggable `LlmProvider`.
                 │        └─ OpenRouterProvider (impl)      │
                 │   └─ LangGraph: DigestGraph              │
                 │                                          │
-                │  ScheduleModule (BullMQ producers)       │
+                │  QueueModule    (BullMQ + Redis client)  │
+                │  ScheduleModule (per-user repeatables)   │
                 │  WorkersModule  (BullMQ consumers)       │
                 │                                          │
                 │  REST: /me, /digests, /auth/x, /health   │
@@ -40,16 +41,18 @@ machine that calls a pluggable `LlmProvider`.
 
 ## Modules
 
-| Module             | Responsibility                                                                |
-|--------------------|-------------------------------------------------------------------------------|
-| `AppwriteModule`   | Thin SDK wrapper. All other modules depend on it for persistence.             |
-| `AuthModule`       | X OAuth2 PKCE flow, encrypted token storage, session cookie issuance.         |
-| `UsersModule`      | `/me` endpoints. Owns cadence settings (`pollIntervalMin`, `digestIntervalMin`). |
-| `IngestionModule`  | `XSource` interface + default X API v2 impl. URL extraction from tweets.     |
-| `ExtractionModule` | `ArticleExtractor` interface + default Firecrawl impl.                       |
-| `DigestModule`     | `LlmProvider` interface + OpenRouter impl. LangGraph `DigestGraph`. REST.    |
-| `QueueModule`      | BullMQ connection, queue tokens, `ScheduleService` (repeatable job sync).    |
-| `WorkersModule`    | BullMQ processors: `poll-x`, `extract-item`, `build-digest`.                 |
+| Module              | Responsibility                                                                |
+|---------------------|-------------------------------------------------------------------------------|
+| `AppwriteModule`    | Thin SDK wrapper. All other modules depend on it for persistence.             |
+| `UsersRepoModule`   | Global module exposing `UsersRepo` (the leaf adapter over Appwrite for the `users` collection). Lifted out of AuthModule in #5 so `ScheduleService` can read cadence without depending on AuthModule. |
+| `AuthModule`        | X OAuth2 PKCE flow, encrypted token storage, session cookie issuance.         |
+| `UsersModule`       | `/me` endpoints. Owns cadence settings (`pollIntervalMin`, `digestIntervalMin`). |
+| `IngestionModule`   | `XSource` interface + default X API v2 impl. URL extraction from tweets.     |
+| `ExtractionModule`  | `ArticleExtractor` interface + default Firecrawl impl.                       |
+| `DigestModule`      | `LlmProvider` interface + OpenRouter impl. LangGraph `DigestGraph`. REST.    |
+| `QueueModule`       | BullMQ connection, queue tokens for `poll-x` / `extract-item` / `build-digest`, shared ioredis client, Redis health helper. Owns the BullMQ + ioredis lifecycle (`onModuleDestroy` drains queues + quits client). |
+| `ScheduleModule`    | `ScheduleService` — the seam between cadence changes and BullMQ repeatable jobs. Public surface is `(userId) => Promise<void>` so consumers (`AuthService`, `UsersService`) never see BullMQ types. |
+| `WorkersModule`     | BullMQ processors: `poll-x`, `extract-item`, `build-digest`. (Arrives in #7 / #8 / #11.) |
 
 ## Data flow
 
@@ -89,7 +92,10 @@ machine that calls a pluggable `LlmProvider`.
 ## Concurrency & scaling
 
 - Workers are horizontally scalable. BullMQ guarantees a job runs on at most one worker.
-- Repeatable jobs are keyed by `userId:queueName`, so re-registering is idempotent.
+- Repeatable jobs use the BullMQ 5.x Job Scheduler API with stable scheduler ids
+  (`user:{id}:poll`, `user:{id}:digest`), so re-registering with a new cadence
+  REPLACES the existing entry rather than producing a duplicate. See
+  [jobs.md](./jobs.md#repeatable-jobs) for the full contract.
 - Appwrite is the only stateful store besides Redis. The Nest process is stateless and can be replicated.
 
 ## What's deliberately *not* in v1
