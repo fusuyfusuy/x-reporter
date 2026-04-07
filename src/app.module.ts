@@ -4,6 +4,7 @@ import { AuthModule } from './auth/auth.module';
 import { LoggerModule } from './common/logger';
 import { loadEnv } from './config/env';
 import { HealthModule } from './health/health.module';
+import { IngestionModule } from './ingestion/ingestion.module';
 import { ScheduleModule } from './schedule/schedule.module';
 import { UsersModule } from './users/users.module';
 
@@ -12,18 +13,26 @@ import { UsersModule } from './users/users.module';
  *
  * Use `AppModule.forRoot()` from `main.ts` so the env is loaded once at boot
  * and passed into modules that need to be configured at construction time
- * (`LoggerModule`, `AppwriteModule`, `AuthModule`, `UsersModule`).
+ * (`LoggerModule`, `AppwriteModule`, `AuthModule`, `UsersModule`,
+ * `IngestionModule`).
  *
  * Module registration order:
  *   1. Foundations: `LoggerModule`, `AppwriteModule`.
  *   2. Cross-cutting: `ScheduleModule` (registered as `@Global()` so any
  *      consumer can inject `ScheduleService` without re-importing).
- *   3. Feature modules: `HealthModule`, `AuthModule`, `UsersModule`.
+ *   3. Feature modules: `HealthModule`, `AuthModule`, `UsersModule`,
+ *      `IngestionModule`.
  *
  * `ScheduleModule` is currently the milestone-#4 stub
  * (`src/schedule/schedule.service.ts`). Milestone #5 will replace its
  * single method's body with the real BullMQ implementation; the
  * registration here does not change.
+ *
+ * `IngestionModule` (milestone #6) exposes the `X_SOURCE` DI token
+ * backed by `XApiV2Source`. It has no controllers of its own — the
+ * `poll-x` processor in milestone #7 is the first consumer. Registering
+ * it here means a future `WorkersModule` only needs to import
+ * `IngestionModule` to inject the port by token.
  */
 @Module({})
 export class AppModule {
@@ -38,6 +47,7 @@ export class AppModule {
         HealthModule,
         AuthModule.forRoot(env),
         UsersModule.forRoot(env),
+        IngestionModule.forRoot(env),
       ],
     };
   }
