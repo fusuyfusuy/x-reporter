@@ -123,6 +123,15 @@ export interface HandleCallbackResult {
 /** Refresh the token if it has fewer than this many ms left. */
 const EXPIRY_SKEW_MS = 60 * 1000;
 
+/**
+ * Maximum number of times {@link AuthService.getValidAccessToken} will
+ * recursively re-enter to recover from a stale-refresh race. One retry
+ * is enough in practice — the parallel winner has already persisted —
+ * but the cap exists so a genuinely broken account still terminates
+ * instead of looping.
+ */
+const MAX_REFRESH_RACE_RETRIES = 1;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -235,8 +244,27 @@ export class AuthService {
    * tokens exist (no row, refresh failed, etc.).
    */
   async getValidAccessToken(userId: string): Promise<string> {
+    return await this.getValidAccessTokenInner(userId, 0);
+  }
+
+  /**
+   * Internal recursive impl. The `attempt` counter exists for the
+   * stale-refresh-race recovery path: if our refresh call returns
+   * `invalid_grant` *because another worker already rotated the token*,
+   * we re-enter once with the freshly persisted row. The depth guard
+   * prevents an infinite loop if something else is genuinely wrong.
+   */
+  private async getValidAccessTokenInner(
+    userId: string,
+    attempt: number,
+  ): Promise<string> {
     const row = await this.tokens.findByUserId(userId);
     if (!row) {
+      // No row at all — partial callback persistence, manual deletion,
+      // or a deleted user. The only recovery is re-auth, so transition
+      // the user to auth_expired before bubbling so scheduled callers
+      // stop retrying a permanently broken account.
+      await this.failAuth(userId);
       throw new AuthExpiredError(`no tokens stored for user ${userId}`);
     }
     // Parse expiresAt up front. A NaN here means the stored row is corrupt
@@ -282,6 +310,24 @@ export class AuthService {
     try {
       refreshed = await this.xClient.refresh(refreshTokenPlain);
     } catch (err) {
+      // STALE-REFRESH RACE GUARD: with multiple workers, one caller can
+      // refresh + persist a rotated token while another is still in
+      // flight against the *previous* refresh token. X correctly returns
+      // `invalid_grant` for the slow caller — but the user's credentials
+      // are NOT actually expired, fresh ones were just persisted under
+      // our feet. Re-read the row; if the stored refresh-token ciphertext
+      // changed between our load and now, a parallel worker won the
+      // race, so retry once with the new row instead of expiring the
+      // user. The attempt counter caps the recursion so a genuinely
+      // broken account still terminates.
+      const current = await this.tokens.findByUserId(userId);
+      if (
+        current &&
+        current.refreshToken !== row.refreshToken &&
+        attempt < MAX_REFRESH_RACE_RETRIES
+      ) {
+        return await this.getValidAccessTokenInner(userId, attempt + 1);
+      }
       await this.failAuth(userId);
       const message = err instanceof Error ? err.message : String(err);
       throw new AuthExpiredError(`refresh failed for user ${userId}: ${message}`);

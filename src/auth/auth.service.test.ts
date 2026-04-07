@@ -416,10 +416,58 @@ describe('AuthService.getValidAccessToken', () => {
     expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
   });
 
-  it('throws AuthExpiredError when no tokens row exists for the user', async () => {
+  it('recovers from a stale-refresh race instead of expiring the user', async () => {
+    // STALE-REFRESH RACE: with multiple workers, worker A can refresh +
+    // persist a rotated token while worker B is still mid-flight against
+    // the previous refresh token. X correctly returns invalid_grant for
+    // worker B — but the user's credentials are NOT actually expired,
+    // fresh ones already exist. The service must detect that the row
+    // changed under its feet and retry with the new row instead of
+    // flipping the user to auth_expired.
+    const key = loadEncryptionKey(KEY_B64);
+    const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const future = new Date(Date.now() + 3600 * 1000).toISOString();
+    const { service, users, tokens, xClient } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    // Seed worker B's view: a near-expired row with a stale refresh token.
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('stale-access', key),
+      refreshToken: encrypt('stale-refresh', key),
+      expiresAt: past,
+      scope: 'tweet.read',
+    });
+    // When B's xClient.refresh fires, simulate that worker A already
+    // rotated the row by overwriting tokens with a fresh, valid pair
+    // BEFORE rejecting B with invalid_grant.
+    xClient.refreshImpl = async () => {
+      await tokens.upsertForUser({
+        userId: u.id,
+        accessToken: encrypt('fresh-access-from-A', key),
+        refreshToken: encrypt('fresh-refresh-from-A', key),
+        expiresAt: future,
+        scope: 'tweet.read',
+      });
+      throw new Error('invalid_grant');
+    };
+
+    // B should re-read, see the new row, and return A's fresh access
+    // token instead of marking the user expired.
+    const access = await service.getValidAccessToken(u.id);
+    expect(access).toBe('fresh-access-from-A');
+    // No auth_expired transition was attempted.
+    expect(users.setStatusCalls).toEqual([]);
+  });
+
+  it('marks the user auth_expired and throws AuthExpiredError when no tokens row exists', async () => {
+    // A missing tokens row means partial callback persistence, manual
+    // deletion, or a deleted user — re-auth is the only recovery, so the
+    // user must transition to auth_expired so scheduled callers stop
+    // retrying a permanently broken account.
     const { service, users } = makeDeps({});
     const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
     await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
   });
 
   it('marks the user auth_expired and throws AuthExpiredError when the access-token ciphertext is corrupt', async () => {
