@@ -2,6 +2,99 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppModule } from './app.module';
+import { SESSION_COOKIE_NAME } from './auth/auth.controller';
+import { signCookieValue } from './auth/cookies';
+
+const TEST_SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
+const TEST_USER_ID = 'u_e2e_test_abc';
+
+/**
+ * In-memory `AppwriteService` stand-in for the e2e-lite test.
+ *
+ * `UsersRepo` only consumes a narrow slice of `appwrite.databases`
+ * (`getDocument`, `updateDocument`, `listDocuments`, `createDocument`).
+ * Reusing the existing `app.module.test.ts` override pattern lets us
+ * exercise the full HTTP → controller → service → repo → fake-db
+ * round-trip without standing up Appwrite or BullMQ.
+ *
+ * The fake also pre-seeds one user row keyed by `TEST_USER_ID` so
+ * `GET /me` has something to return. The session cookie minted in the
+ * test below claims that same id, so the round-trip ties together.
+ */
+function makeStubAppwrite(): {
+  databaseId: string;
+  ping(): Promise<{ status: 'ok' }>;
+  databases: {
+    getDocument(p: {
+      databaseId: string;
+      collectionId: string;
+      documentId: string;
+    }): Promise<Record<string, unknown> & { $id: string }>;
+    updateDocument(p: {
+      databaseId: string;
+      collectionId: string;
+      documentId: string;
+      data: Record<string, unknown>;
+    }): Promise<Record<string, unknown> & { $id: string }>;
+    listDocuments(p: {
+      databaseId: string;
+      collectionId: string;
+      queries?: string[];
+    }): Promise<{ total: number; documents: Array<Record<string, unknown> & { $id: string }> }>;
+    createDocument(p: {
+      databaseId: string;
+      collectionId: string;
+      documentId: string;
+      data: Record<string, unknown>;
+    }): Promise<Record<string, unknown> & { $id: string }>;
+  };
+} {
+  const docs = new Map<string, Record<string, unknown> & { $id: string }>();
+  // Pre-seed the test user so /me has something to read.
+  docs.set(TEST_USER_ID, {
+    $id: TEST_USER_ID,
+    xUserId: '999999',
+    handle: 'e2e_user',
+    status: 'active',
+    createdAt: '2026-04-06T12:00:00Z',
+  });
+  return {
+    databaseId: 'xreporter_test',
+    async ping() {
+      return { status: 'ok' as const };
+    },
+    databases: {
+      async getDocument(p) {
+        const doc = docs.get(p.documentId);
+        if (!doc) {
+          const err = new Error('not found') as Error & { code: number };
+          err.code = 404;
+          throw err;
+        }
+        return doc;
+      },
+      async updateDocument(p) {
+        const existing = docs.get(p.documentId);
+        if (!existing) {
+          const err = new Error('not found') as Error & { code: number };
+          err.code = 404;
+          throw err;
+        }
+        const updated = { ...existing, ...p.data };
+        docs.set(p.documentId, updated);
+        return updated;
+      },
+      async listDocuments() {
+        return { total: 0, documents: [] };
+      },
+      async createDocument(p) {
+        const doc = { $id: p.documentId, ...p.data };
+        docs.set(p.documentId, doc);
+        return doc;
+      },
+    },
+  };
+}
 
 describe('AppModule (e2e-lite)', () => {
   let app: INestApplication;
@@ -29,7 +122,7 @@ describe('AppModule (e2e-lite)', () => {
     process.env.X_REDIRECT_URI = 'http://localhost:3000/auth/x/callback';
     process.env.X_SCOPES = 'tweet.read users.read offline.access';
     process.env.TOKEN_ENC_KEY = Buffer.alloc(32, 0).toString('base64');
-    process.env.SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
+    process.env.SESSION_SECRET = TEST_SESSION_SECRET;
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 
@@ -37,14 +130,7 @@ describe('AppModule (e2e-lite)', () => {
       imports: [AppModule.forRoot()],
     })
       .overrideProvider(AppwriteService)
-      .useValue({
-        get databaseId() {
-          return 'xreporter_test';
-        },
-        async ping() {
-          return { status: 'ok' as const };
-        },
-      })
+      .useValue(makeStubAppwrite())
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -68,5 +154,115 @@ describe('AppModule (e2e-lite)', () => {
   it('GET /unknown returns 404', async () => {
     const res = await fetch(`${baseUrl}/unknown-route-does-not-exist`);
     expect(res.status).toBe(404);
+  });
+
+  it('GET /me without a session cookie returns 401', async () => {
+    const res = await fetch(`${baseUrl}/me`);
+    expect(res.status).toBe(401);
+  });
+
+  it('PATCH /me without a session cookie returns 401', async () => {
+    const res = await fetch(`${baseUrl}/me`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pollIntervalMin: 30 }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET → PATCH → GET round-trip with a stub session cookie reflects the patch', async () => {
+    // Mint a session cookie via the same primitive AuthService uses on
+    // /auth/x/callback. We deliberately do NOT round-trip through the
+    // OAuth start/callback endpoints — those would require a live X
+    // upstream, which is out of scope for #4. Re-using `signCookieValue`
+    // here is the same shape #11 will use for /digests e2e tests.
+    const sessionValue = signCookieValue(
+      { userId: TEST_USER_ID, issuedAt: Date.now() },
+      TEST_SESSION_SECRET,
+    );
+    const cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionValue)}`;
+
+    // 1. GET /me — should return the seeded profile with documented
+    //    cadence defaults (60 / 1440) since the row has never been patched.
+    const get1 = await fetch(`${baseUrl}/me`, { headers: { cookie: cookieHeader } });
+    expect(get1.status).toBe(200);
+    const body1 = await get1.json();
+    expect(body1).toEqual({
+      id: TEST_USER_ID,
+      xUserId: '999999',
+      handle: 'e2e_user',
+      pollIntervalMin: 60,
+      digestIntervalMin: 1440,
+      status: 'active',
+      createdAt: '2026-04-06T12:00:00Z',
+    });
+
+    // 2. PATCH /me — change both fields. The stub ScheduleService logs
+    //    + resolves; that's the side effect #5 will replace.
+    const patch = await fetch(`${baseUrl}/me`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        cookie: cookieHeader,
+      },
+      body: JSON.stringify({ pollIntervalMin: 15, digestIntervalMin: 720 }),
+    });
+    expect(patch.status).toBe(200);
+    const patchBody = (await patch.json()) as Record<string, unknown>;
+    expect(patchBody.pollIntervalMin).toBe(15);
+    expect(patchBody.digestIntervalMin).toBe(720);
+
+    // 3. GET /me again — confirm persistence. This is the round-trip
+    //    acceptance criterion: the second GET reflects the patch
+    //    rather than reading a stale value out of the in-process repo.
+    const get2 = await fetch(`${baseUrl}/me`, { headers: { cookie: cookieHeader } });
+    expect(get2.status).toBe(200);
+    const body2 = (await get2.json()) as Record<string, unknown>;
+    expect(body2.pollIntervalMin).toBe(15);
+    expect(body2.digestIntervalMin).toBe(720);
+    // Other fields untouched.
+    expect(body2.handle).toBe('e2e_user');
+    expect(body2.xUserId).toBe('999999');
+    expect(body2.status).toBe('active');
+  });
+
+  it('PATCH /me with an empty body returns 400 validation_failed', async () => {
+    const sessionValue = signCookieValue(
+      { userId: TEST_USER_ID, issuedAt: Date.now() },
+      TEST_SESSION_SECRET,
+    );
+    const cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionValue)}`;
+    const res = await fetch(`${baseUrl}/me`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: cookieHeader },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: { code: 'validation_failed' } });
+  });
+
+  it('PATCH /me with pollIntervalMin below 5 returns 400', async () => {
+    const sessionValue = signCookieValue(
+      { userId: TEST_USER_ID, issuedAt: Date.now() },
+      TEST_SESSION_SECRET,
+    );
+    const cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionValue)}`;
+    const res = await fetch(`${baseUrl}/me`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: cookieHeader },
+      body: JSON.stringify({ pollIntervalMin: 4 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /me with a tampered session cookie returns 401', async () => {
+    const sessionValue = signCookieValue(
+      { userId: TEST_USER_ID, issuedAt: Date.now() },
+      'a-completely-different-secret-32-chars',
+    );
+    const cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionValue)}`;
+    const res = await fetch(`${baseUrl}/me`, { headers: { cookie: cookieHeader } });
+    expect(res.status).toBe(401);
   });
 });

@@ -213,12 +213,15 @@ describe('UsersController PATCH /me', () => {
     const { service, state } = makeFakeService();
     const controller = new UsersController(service);
     let caught: unknown;
+    // The patchMe signature is `(req, body: unknown)` so we just hand
+    // it a literal — no `any` cast required, the strict zod schema
+    // does the type narrowing at runtime.
+    const bodyWithUnknownKey: Record<string, unknown> = {
+      pollIntervalMin: 10,
+      bogusField: 'nope',
+    };
     try {
-      await controller.patchMe(makeReq('u_abc') as never, {
-        pollIntervalMin: 10,
-        // biome-ignore lint/suspicious/noExplicitAny: deliberately invalid extra key
-        bogusField: 'nope',
-      } as any);
+      await controller.patchMe(makeReq('u_abc') as never, bodyWithUnknownKey);
     } catch (err) {
       caught = err;
     }
