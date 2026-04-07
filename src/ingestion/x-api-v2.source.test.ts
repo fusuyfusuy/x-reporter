@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { AuthExpiredError } from '../auth/auth.service';
 import type { UserRecord, UsersRepo } from '../users/users.repo';
-import {
-  type FakeAuthService,
-  XApiV2Source,
-  type XApiV2SourceConfig,
-} from './x-api-v2.source';
+import { type FakeAuthService, XApiV2Source, type XApiV2SourceConfig } from './x-api-v2.source';
 
 /**
  * Shared config — the real `AuthModule` passes the same three endpoint
@@ -37,10 +33,7 @@ function fakeUsersRepo(user: UserRecord | null): Pick<UsersRepo, 'findById'> {
  * adapter actually depends on (not the full concrete class) so we don't
  * have to stand up the whole crypto/repo pipeline for a network test.
  */
-function fakeAuthService(opts: {
-  token?: string;
-  throwOnGet?: Error;
-}): FakeAuthService {
+function fakeAuthService(opts: { token?: string; throwOnGet?: Error }): FakeAuthService {
   return {
     getValidAccessToken: async (_userId: string) => {
       if (opts.throwOnGet) throw opts.throwOnGet;
@@ -59,9 +52,10 @@ interface FakeFetchCall {
  * runs dry the test fails loudly (instead of returning `undefined` and
  * crashing with a confusing TypeError later).
  */
-function fakeFetch(
-  responses: Array<{ status: number; body: unknown }>,
-): { fetch: typeof fetch; calls: FakeFetchCall[] } {
+function fakeFetch(responses: Array<{ status: number; body: unknown }>): {
+  fetch: typeof fetch;
+  calls: FakeFetchCall[];
+} {
   const calls: FakeFetchCall[] = [];
   let i = 0;
   const impl = (async (input: unknown, init?: RequestInit) => {
@@ -164,9 +158,7 @@ describe('XApiV2Source.fetchLikes — happy path', () => {
   });
 
   it('returns empty items when X returns an empty data array', async () => {
-    const { fetch: fakeImpl } = fakeFetch([
-      { status: 200, body: { data: [], meta: {} } },
-    ]);
+    const { fetch: fakeImpl } = fakeFetch([{ status: 200, body: { data: [], meta: {} } }]);
     const source = new XApiV2Source(
       baseConfig,
       fakeAuthService({}),
@@ -211,9 +203,7 @@ describe('XApiV2Source.fetchLikes — happy path', () => {
       {
         status: 200,
         body: {
-          data: [
-            { id: 'tweet-x', text: 'no includes at all', author_id: 'x-author' },
-          ],
+          data: [{ id: 'tweet-x', text: 'no includes at all', author_id: 'x-author' }],
           meta: {},
         },
       },
@@ -273,9 +263,7 @@ describe('XApiV2Source.fetchBookmarks — happy path', () => {
     const call = calls[0];
     if (!call) throw new Error('fetchBookmarks made no HTTP call');
     const url = new URL(call.url);
-    expect(url.origin + url.pathname).toBe(
-      'https://api.twitter.com/2/users/123456/bookmarks',
-    );
+    expect(url.origin + url.pathname).toBe('https://api.twitter.com/2/users/123456/bookmarks');
     expect(page.items).toEqual([
       {
         tweetId: 'bm-1',
@@ -290,9 +278,7 @@ describe('XApiV2Source.fetchBookmarks — happy path', () => {
 
 describe('XApiV2Source — cursor handling', () => {
   it('passes the provided cursor through as pagination_token', async () => {
-    const { fetch: fakeImpl, calls } = fakeFetch([
-      { status: 200, body: { data: [], meta: {} } },
-    ]);
+    const { fetch: fakeImpl, calls } = fakeFetch([{ status: 200, body: { data: [], meta: {} } }]);
     const source = new XApiV2Source(
       baseConfig,
       fakeAuthService({}),
@@ -328,9 +314,7 @@ describe('XApiV2Source — cursor handling', () => {
   });
 
   it('returns undefined nextCursor when meta.next_token is absent', async () => {
-    const { fetch: fakeImpl } = fakeFetch([
-      { status: 200, body: { data: [], meta: {} } },
-    ]);
+    const { fetch: fakeImpl } = fakeFetch([{ status: 200, body: { data: [], meta: {} } }]);
     const source = new XApiV2Source(
       baseConfig,
       fakeAuthService({}),
@@ -365,9 +349,7 @@ describe('XApiV2Source — auth propagation', () => {
       fakeUsersRepo(activeUser),
       fakeImpl,
     );
-    await expect(source.fetchLikes('appwrite-user-1')).rejects.toBeInstanceOf(
-      AuthExpiredError,
-    );
+    await expect(source.fetchLikes('appwrite-user-1')).rejects.toBeInstanceOf(AuthExpiredError);
     expect(calls).toHaveLength(0);
   });
 });
@@ -375,12 +357,7 @@ describe('XApiV2Source — auth propagation', () => {
 describe('XApiV2Source — user resolution', () => {
   it('throws when the user row is not found', async () => {
     const { fetch: fakeImpl, calls } = fakeFetch([]);
-    const source = new XApiV2Source(
-      baseConfig,
-      fakeAuthService({}),
-      fakeUsersRepo(null),
-      fakeImpl,
-    );
+    const source = new XApiV2Source(baseConfig, fakeAuthService({}), fakeUsersRepo(null), fakeImpl);
     await expect(source.fetchLikes('missing-user')).rejects.toThrow(/missing-user/);
     expect(calls).toHaveLength(0);
   });
@@ -423,7 +400,16 @@ describe('XApiV2Source — upstream failures', () => {
 
   it('surfaces a zod parse error when the response is missing required fields', async () => {
     const { fetch: fakeImpl } = fakeFetch([
-      { status: 200, body: { data: [{ /* missing id and text */ }] } },
+      {
+        status: 200,
+        body: {
+          data: [
+            {
+              /* missing id and text */
+            },
+          ],
+        },
+      },
     ]);
     const source = new XApiV2Source(
       baseConfig,
@@ -435,9 +421,7 @@ describe('XApiV2Source — upstream failures', () => {
   });
 
   it('does not leak access tokens in the thrown message for a zod parse error', async () => {
-    const { fetch: fakeImpl } = fakeFetch([
-      { status: 200, body: { data: [{}] } },
-    ]);
+    const { fetch: fakeImpl } = fakeFetch([{ status: 200, body: { data: [{}] } }]);
     const source = new XApiV2Source(
       baseConfig,
       fakeAuthService({ token: 'sensitive-token-value' }),

@@ -28,21 +28,14 @@ describe('extractUrls — text fallback (no entities)', () => {
     const result = extractUrls({
       text: 'first https://zebra.io/a and then https://apple.io/b plus https://mango.io/c',
     });
-    expect(result).toEqual([
-      'https://apple.io/b',
-      'https://mango.io/c',
-      'https://zebra.io/a',
-    ]);
+    expect(result).toEqual(['https://apple.io/b', 'https://mango.io/c', 'https://zebra.io/a']);
   });
 
   it('handles both http and https schemes in text', () => {
     const result = extractUrls({
       text: 'old site http://legacy.example.org and new https://modern.example.org',
     });
-    expect(result).toEqual([
-      'http://legacy.example.org',
-      'https://modern.example.org',
-    ]);
+    expect(result).toEqual(['http://legacy.example.org', 'https://modern.example.org']);
   });
 
   it('strips trailing punctuation from URLs in text', () => {
@@ -66,10 +59,7 @@ describe('extractUrls — text fallback (no entities)', () => {
     const result = extractUrls({
       text: 'real https://example.com via https://t.co/abc and https://another.io',
     });
-    expect(result).toEqual([
-      'https://another.io',
-      'https://example.com',
-    ]);
+    expect(result).toEqual(['https://another.io', 'https://example.com']);
   });
 });
 
@@ -91,9 +81,7 @@ describe('extractUrls — entities.urls precedence', () => {
     const result = extractUrls({
       text: 'also https://example.com/from-text should NOT appear',
       entities: {
-        urls: [
-          { url: 'https://t.co/xyz', expanded_url: 'https://real.example.org/post' },
-        ],
+        urls: [{ url: 'https://t.co/xyz', expanded_url: 'https://real.example.org/post' }],
       },
     });
     expect(result).toEqual(['https://real.example.org/post']);
@@ -110,11 +98,7 @@ describe('extractUrls — entities.urls precedence', () => {
         ],
       },
     });
-    expect(result).toEqual([
-      'https://apple.io/b',
-      'https://mango.io/c',
-      'https://zebra.io/a',
-    ]);
+    expect(result).toEqual(['https://apple.io/b', 'https://mango.io/c', 'https://zebra.io/a']);
   });
 
   it('filters out entities.urls entries whose expanded_url is itself a t.co wrapper', () => {
@@ -184,10 +168,6 @@ describe('extractUrls — determinism', () => {
       },
     });
     expect(a).toEqual(b);
-    expect(a).toEqual([
-      'https://a.example.com',
-      'https://b.example.com',
-      'https://c.example.com',
-    ]);
+    expect(a).toEqual(['https://a.example.com', 'https://b.example.com', 'https://c.example.com']);
   });
 });

@@ -107,10 +107,7 @@ const FetchPageResponseSchema = z
       .object({ users: z.array(IncludedUserSchema).optional() })
       .passthrough()
       .optional(),
-    meta: z
-      .object({ next_token: z.string().optional() })
-      .passthrough()
-      .optional(),
+    meta: z.object({ next_token: z.string().optional() }).passthrough().optional(),
   })
   .passthrough();
 
@@ -208,9 +205,7 @@ export class XApiV2Source implements XSource {
 
     return {
       items,
-      ...(parsed.meta?.next_token !== undefined
-        ? { nextCursor: parsed.meta.next_token }
-        : {}),
+      ...(parsed.meta?.next_token !== undefined ? { nextCursor: parsed.meta.next_token } : {}),
     };
   }
 
@@ -229,9 +224,7 @@ export class XApiV2Source implements XSource {
       throw new Error(`XApiV2Source: user not found: ${userId}`);
     }
     if (user.status !== 'active') {
-      throw new Error(
-        `XApiV2Source: user ${userId} is not active (status=${user.status})`,
-      );
+      throw new Error(`XApiV2Source: user ${userId} is not active (status=${user.status})`);
     }
     return user;
   }
