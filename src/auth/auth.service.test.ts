@@ -1,13 +1,27 @@
 import { describe, expect, it } from 'bun:test';
 import { decrypt, encrypt, loadEncryptionKey } from '../common/crypto';
-import type { TokenRecord } from '../tokens/tokens.repo';
-import type { UserRecord, UserStatus } from '../users/users.repo';
+import type { TokenRecord, TokensRepo } from '../tokens/tokens.repo';
+import type { UserRecord, UsersRepo, UserStatus } from '../users/users.repo';
 import { AuthExpiredError, AuthService } from './auth.service';
 import { verifyCookieValue } from './cookies';
 import type { XOAuthClient, XTokenResponse, XUserInfo } from './x-oauth-client';
 
 const KEY_B64 = Buffer.alloc(32, 13).toString('base64');
 const SESSION_SECRET = 'a-test-session-secret-that-is-at-least-32-chars';
+
+/**
+ * Flip the first byte of the ciphertext+tag portion of an encrypted blob.
+ * Leaves the IV portion (before `:`) intact so `decrypt` reaches the GCM
+ * auth-tag check and rejects with a tamper failure rather than a parse
+ * error. Used to simulate corrupted-at-rest tokens.
+ */
+function tamperCiphertext(encrypted: string): string {
+  const [iv, ct] = encrypted.split(':');
+  if (!iv || !ct) throw new Error('unexpected encrypted format');
+  const buf = Buffer.from(ct, 'base64');
+  buf[0] = (buf[0] ?? 0) ^ 0xff;
+  return `${iv}:${buf.toString('base64')}`;
+}
 
 /**
  * Build the dependency bundle that `AuthService` needs. Each test
@@ -39,9 +53,9 @@ function makeDeps(overrides: {
       stateCookieMaxAgeSec: 600,
       sessionCookieMaxAgeSec: 2_592_000,
     },
-    xClient as unknown as XOAuthClient,
-    users as never,
-    tokens as never,
+    xClient,
+    users as unknown as UsersRepo,
+    tokens as unknown as TokensRepo,
   );
   return { service, xClient, users, tokens };
 }
@@ -227,9 +241,6 @@ describe('AuthService.handleCallback', () => {
     );
     expect(sessionPayload).not.toBeNull();
     expect(sessionPayload?.userId).toBe(result.userId);
-
-    // The fake X client was actually called.
-    expect(xClient).toBeDefined();
   });
 
   it('rejects when the query state does not match the cookie state', async () => {
@@ -409,5 +420,68 @@ describe('AuthService.getValidAccessToken', () => {
     const { service, users } = makeDeps({});
     const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
     await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+  });
+
+  it('marks the user auth_expired and throws AuthExpiredError when the access-token ciphertext is corrupt', async () => {
+    const key = loadEncryptionKey(KEY_B64);
+    const future = new Date(Date.now() + 3600 * 1000).toISOString();
+    const { service, users, tokens } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    // Encrypt a real value, then mutate the ciphertext to force a tamper
+    // failure in decrypt(). Avoid touching the IV portion (before ':') so
+    // the format check passes and we exercise the GCM auth-tag failure
+    // rather than a parse-time error.
+    const tampered = tamperCiphertext(encrypt('still-valid-access', key));
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: tampered,
+      refreshToken: encrypt('still-valid-refresh', key),
+      expiresAt: future,
+      scope: 'tweet.read',
+    });
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
+  });
+
+  it('marks the user auth_expired and throws AuthExpiredError when the refresh-token ciphertext is corrupt', async () => {
+    const key = loadEncryptionKey(KEY_B64);
+    const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { service, users, tokens, xClient } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    const tampered = tamperCiphertext(encrypt('plain-refresh', key));
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('expired-access', key),
+      refreshToken: tampered,
+      expiresAt: past,
+      scope: 'tweet.read',
+    });
+    let refreshCalled = false;
+    xClient.refreshImpl = async () => {
+      refreshCalled = true;
+      throw new Error('should not be reached');
+    };
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    // Decrypt fails before refresh is even attempted.
+    expect(refreshCalled).toBe(false);
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
+  });
+
+  it('marks the user auth_expired and throws AuthExpiredError when expiresAt is malformed', async () => {
+    const key = loadEncryptionKey(KEY_B64);
+    const { service, users, tokens } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('access', key),
+      refreshToken: encrypt('refresh', key),
+      expiresAt: 'not-an-iso-date',
+      scope: 'tweet.read',
+    });
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
   });
 });

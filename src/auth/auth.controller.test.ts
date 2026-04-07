@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { AuthController } from './auth.controller';
-import { AuthExpiredError, type AuthService } from './auth.service';
+import type { AuthService } from './auth.service';
 
 interface FakeRes {
   _status?: number;
@@ -201,24 +201,5 @@ describe('AuthController', () => {
       expect(res._status).toBe(400);
     });
 
-    it('propagates AuthExpiredError as a 401 response', async () => {
-      const fakeService = {
-        handleCallback: async () => {
-          throw new AuthExpiredError('refresh failed');
-        },
-      } as unknown as AuthService;
-      const controller = new AuthController(fakeService, {
-        cookieSecure: false,
-        stateCookieMaxAgeSec: 600,
-        sessionCookieMaxAgeSec: 100,
-      });
-      const req = fakeReq({
-        query: { code: 'c', state: 's' },
-        cookieHeader: 'xr_oauth_state=abc',
-      });
-      const res = fakeRes();
-      await controller.callback(req, res);
-      expect(res._status).toBe(401);
-    });
   });
 });

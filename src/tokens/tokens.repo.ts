@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { ID, Query } from 'node-appwrite';
 import { AppwriteService } from '../appwrite/appwrite.service';
 
 /**
@@ -32,11 +31,11 @@ export interface TokenRecord {
 }
 
 interface TokensDatabases {
-  listDocuments(params: {
+  getDocument(params: {
     databaseId: string;
     collectionId: string;
-    queries?: string[];
-  }): Promise<{ total: number; documents: Array<Record<string, unknown> & { $id: string }> }>;
+    documentId: string;
+  }): Promise<Record<string, unknown> & { $id: string }>;
   createDocument(params: {
     databaseId: string;
     collectionId: string;
@@ -64,27 +63,43 @@ export class TokensRepo {
   }
 
   /**
-   * Create-or-update the tokens row for the given user. Idempotent: a
-   * second call for the same user updates the existing row in place
-   * (the `userId_unique` index in Appwrite enforces this at the DB level
-   * too, but we look up first to avoid relying on a race-prone "create
-   * then catch 409 then update" pattern).
+   * Create-or-update the tokens row for the given user. Idempotent and
+   * race-free: the document id is `userId` itself, so two concurrent calls
+   * for the same user can never create two rows. The first call wins on
+   * `createDocument`; the second hits a 409 and falls through to
+   * `updateDocument`.
+   *
+   * Using a deterministic id (instead of `ID.unique()` + a `userId_unique`
+   * index lookup) is what makes this fully concurrency-safe — the previous
+   * "list, then create-or-update" pattern had a TOCTOU window where two
+   * concurrent first-time sign-ins for the same user could both observe
+   * "no row" and one would 409.
    *
    * `accessToken` and `refreshToken` MUST already be ciphertext from
    * `src/common/crypto.ts#encrypt`. The repo never inspects the values.
    */
   async upsertForUser(input: TokenRecord): Promise<TokenRecord> {
-    const list = await this.db.listDocuments({
-      databaseId: this.databaseId,
-      collectionId: COLLECTION_ID,
-      queries: [Query.equal('userId', input.userId)],
-    });
-    if (list.total > 0 && list.documents.length > 0) {
-      const existing = list.documents[0]!;
+    const data = {
+      userId: input.userId,
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      expiresAt: input.expiresAt,
+      scope: input.scope,
+    };
+    try {
+      const created = await this.db.createDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId: input.userId,
+        data,
+      });
+      return toTokenRecord(created);
+    } catch (err) {
+      if (!isConflict(err)) throw err;
       const updated = await this.db.updateDocument({
         databaseId: this.databaseId,
         collectionId: COLLECTION_ID,
-        documentId: existing.$id,
+        documentId: input.userId,
         data: {
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
@@ -94,31 +109,32 @@ export class TokensRepo {
       });
       return toTokenRecord(updated);
     }
-    const created = await this.db.createDocument({
-      databaseId: this.databaseId,
-      collectionId: COLLECTION_ID,
-      documentId: ID.unique(),
-      data: {
-        userId: input.userId,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
-        expiresAt: input.expiresAt,
-        scope: input.scope,
-      },
-    });
-    return toTokenRecord(created);
   }
 
   /** Returns the (still-encrypted) tokens row for the user, or `null`. */
   async findByUserId(userId: string): Promise<TokenRecord | null> {
-    const list = await this.db.listDocuments({
-      databaseId: this.databaseId,
-      collectionId: COLLECTION_ID,
-      queries: [Query.equal('userId', userId)],
-    });
-    if (list.total === 0 || list.documents.length === 0) return null;
-    return toTokenRecord(list.documents[0]!);
+    try {
+      const doc = await this.db.getDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId: userId,
+      });
+      return toTokenRecord(doc);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
   }
+}
+
+function isConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { code?: number }).code === 409;
+}
+
+function isNotFound(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { code?: number }).code === 404;
 }
 
 function toTokenRecord(doc: Record<string, unknown> & { $id: string }): TokenRecord {

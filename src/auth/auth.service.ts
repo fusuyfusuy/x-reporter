@@ -221,27 +221,50 @@ export class AuthService {
     if (!row) {
       throw new AuthExpiredError(`no tokens stored for user ${userId}`);
     }
+    // Parse expiresAt up front. A NaN here means the stored row is corrupt
+    // (truncated, hand-edited, or written by an older format) — there's no
+    // safe way to "use" or "refresh" an unknown expiry, so treat it the same
+    // as a hard auth failure.
     const expiresAtMs = Date.parse(row.expiresAt);
+    if (Number.isNaN(expiresAtMs)) {
+      await this.failAuth(userId);
+      throw new AuthExpiredError(
+        `tokens row for user ${userId} has malformed expiresAt`,
+      );
+    }
     const msUntilExpiry = expiresAtMs - Date.now();
     if (msUntilExpiry > EXPIRY_SKEW_MS) {
-      // Still valid → just decrypt and return.
-      return decrypt(row.accessToken, this.config.encryptionKey);
+      // Still valid → just decrypt and return. A decrypt failure here means
+      // the ciphertext was tampered with or the encryption key changed — in
+      // either case the row is unusable, transition the user to auth_expired
+      // and surface the typed error so callers handle it consistently.
+      try {
+        return decrypt(row.accessToken, this.config.encryptionKey);
+      } catch (err) {
+        await this.failAuth(userId);
+        const message = err instanceof Error ? err.message : String(err);
+        throw new AuthExpiredError(
+          `failed to decrypt access token for user ${userId}: ${message}`,
+        );
+      }
     }
-    // Expired or near-expired → refresh.
-    const refreshTokenPlain = decrypt(row.refreshToken, this.config.encryptionKey);
+    // Expired or near-expired → refresh. Same treatment for a refresh-token
+    // decrypt failure: there's nothing left to try, so it's an auth failure.
+    let refreshTokenPlain: string;
+    try {
+      refreshTokenPlain = decrypt(row.refreshToken, this.config.encryptionKey);
+    } catch (err) {
+      await this.failAuth(userId);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new AuthExpiredError(
+        `failed to decrypt refresh token for user ${userId}: ${message}`,
+      );
+    }
     let refreshed: XTokenResponse;
     try {
       refreshed = await this.xClient.refresh(refreshTokenPlain);
     } catch (err) {
-      // Mark the user auth_expired so the next scheduled poll skips them.
-      // Swallow any error from setStatus — we still want to throw the
-      // AuthExpiredError so the caller stops, but never silently because
-      // both legs failed.
-      try {
-        await this.users.setStatus(userId, 'auth_expired');
-      } catch {
-        // intentionally ignored — caller still receives AuthExpiredError
-      }
+      await this.failAuth(userId);
       const message = err instanceof Error ? err.message : String(err);
       throw new AuthExpiredError(`refresh failed for user ${userId}: ${message}`);
     }
@@ -256,5 +279,24 @@ export class AuthService {
       scope: refreshed.scope,
     });
     return refreshed.accessToken;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Internals
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Best-effort transition of a user to `auth_expired` after any
+   * unrecoverable token failure (refresh rejected, decrypt failed,
+   * malformed expiresAt). Errors from `setStatus` are swallowed so the
+   * caller still receives the typed `AuthExpiredError` — the goal is to
+   * stop scheduled polls for this user, not to mask the original failure.
+   */
+  private async failAuth(userId: string): Promise<void> {
+    try {
+      await this.users.setStatus(userId, 'auth_expired');
+    } catch {
+      // intentionally ignored — caller still receives AuthExpiredError
+    }
   }
 }

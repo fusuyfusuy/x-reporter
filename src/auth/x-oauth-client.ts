@@ -68,7 +68,17 @@ export interface XOAuthClientConfig {
   tokenEndpoint: string;
   /** X `/2/users/me` endpoint. */
   userInfoEndpoint: string;
+  /**
+   * Per-request network timeout for outbound calls to X, in milliseconds.
+   * Defaults to {@link DEFAULT_FETCH_TIMEOUT_MS} when omitted. Without a
+   * timeout a stalled X endpoint can leave `/auth/x/callback` (or a
+   * background token refresh) hanging indefinitely.
+   */
+  fetchTimeoutMs?: number;
 }
+
+/** Default timeout for outbound calls to X (10s). */
+export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * Zod schema for the X token endpoint response. Exported so the auth
@@ -143,7 +153,7 @@ export class HttpXOAuthClient implements XOAuthClient {
   }
 
   async getMe(accessToken: string): Promise<XUserInfo> {
-    const res = await this.fetchImpl(this.config.userInfoEndpoint, {
+    const res = await this.fetchWithTimeout(this.config.userInfoEndpoint, {
       method: 'GET',
       headers: {
         accept: 'application/json',
@@ -163,7 +173,7 @@ export class HttpXOAuthClient implements XOAuthClient {
     const basicAuth = Buffer.from(
       `${this.config.clientId}:${this.config.clientSecret}`,
     ).toString('base64');
-    const res = await this.fetchImpl(this.config.tokenEndpoint, {
+    const res = await this.fetchWithTimeout(this.config.tokenEndpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -188,4 +198,34 @@ export class HttpXOAuthClient implements XOAuthClient {
       scope: parsed.scope,
     };
   }
+
+  /**
+   * Wrap `fetchImpl` with an `AbortController` so a stalled X endpoint
+   * can never hang the request indefinitely. Translates the resulting
+   * `AbortError` into a clear, redacted error message — no token data is
+   * ever in scope here, only the URL.
+   */
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    const timeoutMs = this.config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error(`x request timed out after ${timeoutMs}ms: ${url}`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { name?: string }).name === 'AbortError';
 }

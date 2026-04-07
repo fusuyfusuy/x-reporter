@@ -87,35 +87,62 @@ export class UsersRepo {
   async upsertByXUserId(input: { xUserId: string; handle: string }): Promise<UserRecord> {
     const existing = await this.findByXUserId(input.xUserId);
     if (existing) {
-      const needsUpdate =
-        existing.handle !== input.handle || existing.status === 'auth_expired';
-      if (!needsUpdate) return existing;
-      const updated = await this.db.updateDocument({
-        databaseId: this.databaseId,
-        collectionId: COLLECTION_ID,
-        documentId: existing.id,
-        data: {
-          handle: input.handle,
-          status: 'active',
-        },
-      });
-      return toUserRecord(updated);
+      return this.applyUpsertUpdate(existing, input);
     }
 
+    // No existing row → try to create one. If two concurrent first-time
+    // sign-ins for the same X user race here, the `xUserId_unique` index in
+    // Appwrite will reject the loser with a 409. Catch that case, re-query
+    // the row the winner created, and apply the same update path so the
+    // method stays idempotent under concurrency.
     const documentId = ID.unique();
     const createdAt = new Date().toISOString();
-    const created = await this.db.createDocument({
+    try {
+      const created = await this.db.createDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId,
+        data: {
+          xUserId: input.xUserId,
+          handle: input.handle,
+          status: 'active',
+          createdAt,
+        },
+      });
+      return toUserRecord(created);
+    } catch (err) {
+      if (!isConflict(err)) throw err;
+      const winner = await this.findByXUserId(input.xUserId);
+      if (!winner) {
+        // 409 with no row to read back means the constraint that fired was
+        // not the unique-xUserId one — surface the original error.
+        throw err;
+      }
+      return this.applyUpsertUpdate(winner, input);
+    }
+  }
+
+  /**
+   * Shared "row already exists, reconcile with the requested handle/status"
+   * branch used by both the happy path and the post-conflict re-read path.
+   */
+  private async applyUpsertUpdate(
+    existing: UserRecord,
+    input: { xUserId: string; handle: string },
+  ): Promise<UserRecord> {
+    const needsUpdate =
+      existing.handle !== input.handle || existing.status === 'auth_expired';
+    if (!needsUpdate) return existing;
+    const updated = await this.db.updateDocument({
       databaseId: this.databaseId,
       collectionId: COLLECTION_ID,
-      documentId,
+      documentId: existing.id,
       data: {
-        xUserId: input.xUserId,
         handle: input.handle,
         status: 'active',
-        createdAt,
       },
     });
-    return toUserRecord(created);
+    return toUserRecord(updated);
   }
 
   /**
@@ -164,6 +191,11 @@ function isNotFound(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as { code?: number };
   return e.code === 404;
+}
+
+function isConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { code?: number }).code === 409;
 }
 
 /**

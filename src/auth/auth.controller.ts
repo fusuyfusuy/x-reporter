@@ -1,5 +1,5 @@
 import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
-import { AuthExpiredError, AuthService } from './auth.service';
+import { AuthService } from './auth.service';
 import { type CookieOptions, parseCookies, serializeCookie } from './cookies';
 
 /**
@@ -128,16 +128,15 @@ export class AuthController {
       // one installs the session cookie.
       res.setHeader('Set-Cookie', [this.clearStateCookieHeader(), sessionCookie]);
       res.redirect(302, '/me');
-    } catch (err) {
+    } catch (_err) {
       res.setHeader('Set-Cookie', this.clearStateCookieHeader());
-      if (err instanceof AuthExpiredError) {
-        res.status(401).send('auth expired');
-        return;
-      }
-      // Every other error (state mismatch, expired state cookie, signature
-      // mismatch, code-exchange failure, persistence failure, ...) becomes
-      // a generic 400. The underlying message stays in the server logs via
-      // nestjs-pino — only a short string is returned in the body.
+      // Every callback error (state mismatch, expired state cookie, signature
+      // mismatch, code-exchange failure, persistence failure, ...) becomes a
+      // generic 400. `handleCallback` does not perform token refresh, so
+      // `AuthExpiredError` is unreachable here — `getValidAccessToken` is
+      // the only path that throws it, and that runs from background workers.
+      // The underlying message stays in the server logs via nestjs-pino —
+      // only a short string is returned in the body.
       res.status(400).send('invalid auth callback');
     }
   }

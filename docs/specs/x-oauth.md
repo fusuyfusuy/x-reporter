@@ -52,11 +52,22 @@ It introduces:
      buildAuthorizeUrl(input: { state: string; codeChallenge: string }): string;
      exchangeCode(input: { code: string; codeVerifier: string }): Promise<XTokenResponse>;
      refresh(refreshToken: string): Promise<XTokenResponse>;
+     getMe(accessToken: string): Promise<XUserInfo>;
    }
    ```
+   `getMe` is part of the port (rather than `XSource`) because it runs
+   inside the sign-in handshake immediately after `exchangeCode`, to
+   resolve the X numeric user id and handle that bootstrap the `users`
+   row in `AuthService.handleCallback`. Keeping it here means the auth
+   module never imports anything from `src/ingestion/`.
+
    The default impl (`HttpXOAuthClient`) wraps Bun's native `fetch` against
-   `https://api.twitter.com/2/oauth2/token` (PKCE token endpoint). Tests
-   inject a fake `fetch` (or a fake client) so no network is touched.
+   `https://api.twitter.com/2/oauth2/token` (PKCE token endpoint) and
+   `https://api.twitter.com/2/users/me` (for `getMe`). Every outbound call
+   is wrapped in an `AbortController` with a configurable per-request
+   timeout (default 10s) so a stalled X endpoint cannot hang
+   `/auth/x/callback` or a background refresh. Tests inject a fake `fetch`
+   (or a fake client) so no network is touched.
 
 5. **PKCE helpers** (`src/auth/pkce.ts`) — pure functions:
    - `generateState()` → 32 random URL-safe bytes (base64url).
@@ -181,10 +192,13 @@ It introduces:
   and a basic-auth Authorization header from `X_CLIENT_ID:X_CLIENT_SECRET`
   per the X OAuth2 confidential client docs.
 
-- **Validate all external input with zod at boundaries.** The callback
-  query string is parsed via a small zod schema before it reaches the
-  service. The X token endpoint response is also parsed via zod so a
-  malformed X response cannot poison persistence.
+- **Validate external input at boundaries.** On the callback path, the
+  controller rejects requests unless the required `code` and `state`
+  query parameters are present as strings before invoking the service —
+  a small enough surface that zod buys nothing over a manual check. The
+  X token endpoint response and the `/2/users/me` response are both
+  parsed via zod inside `HttpXOAuthClient` so a malformed X response
+  cannot poison persistence.
 
 - **Out of scope (deferred):**
   - The actual `/me` controller — owned by issue #4. The redirect target

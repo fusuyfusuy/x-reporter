@@ -188,6 +188,27 @@ describe('HttpXOAuthClient.getMe', () => {
   });
 });
 
+describe('HttpXOAuthClient fetch timeout', () => {
+  it('aborts and throws a timeout error when the underlying fetch hangs past fetchTimeoutMs', async () => {
+    // A fetch impl that observes the abort signal and rejects with the
+    // standard AbortError when the controller fires.
+    const hangingFetch = ((_url: unknown, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('aborted') as Error & { name: string };
+          err.name = 'AbortError';
+          reject(err);
+        });
+      });
+    }) as unknown as typeof fetch;
+    const client = new HttpXOAuthClient(
+      { ...baseConfig, fetchTimeoutMs: 20 },
+      hangingFetch,
+    );
+    await expect(client.getMe('any-token')).rejects.toThrow(/timed out/i);
+  });
+});
+
 describe('XTokenResponseSchema', () => {
   it('accepts a valid response', () => {
     const parsed = XTokenResponseSchema.parse({
