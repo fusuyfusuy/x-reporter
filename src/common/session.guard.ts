@@ -150,7 +150,15 @@ export class SessionGuard implements CanActivate {
     }
     const ageMs = Date.now() - payload.issuedAt;
     const maxAgeMs = this.config.sessionMaxAgeSec * 1000;
-    if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > maxAgeMs) {
+    // Skew handling is symmetric: both bounds get the same tolerance
+    // window so a verifier whose clock is a few seconds ahead of the
+    // issuer can't reject still-valid sessions early, just as a
+    // verifier whose clock is behind can't choke on a freshly minted
+    // cookie that looks like it's "from the future".
+    if (
+      ageMs < -CLOCK_SKEW_TOLERANCE_MS ||
+      ageMs > maxAgeMs + CLOCK_SKEW_TOLERANCE_MS
+    ) {
       throw new UnauthorizedException(unauthorizedBody());
     }
     req.user = { id: payload.userId };

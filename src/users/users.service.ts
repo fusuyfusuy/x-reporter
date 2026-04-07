@@ -79,11 +79,20 @@ export interface MeProfile {
  * the underlying `users` row no longer exists. Possible causes: a
  * deleted account, a manual Appwrite cleanup, or a stale cookie
  * issued before the row was reset. The controller maps this to `404`.
+ *
+ * The exception message is intentionally generic and free of identifiers
+ * so global exception filters / telemetry pipelines that persist
+ * `err.message` cannot accidentally leak a stable user id into shared
+ * logs. The owning `userId` is still available on the instance via the
+ * `userId` property for code paths that legitimately need it (tests,
+ * structured-logging adapters that pin it under a redactable field).
  */
 export class UserNotFoundError extends Error {
+  readonly userId: string;
   constructor(userId: string) {
-    super(`user not found: ${userId}`);
+    super('user not found');
     this.name = 'UserNotFoundError';
+    this.userId = userId;
   }
 }
 
@@ -95,11 +104,25 @@ export class UserNotFoundError extends Error {
  * the underlying repo error → `500`) and from "user input invalid"
  * (which the zod schema rejects with `400` long before this service
  * is reached).
+ *
+ * The exception message is generic for the same reason as
+ * {@link UserNotFoundError}: the underlying adapter error and userId
+ * are kept on the instance (`cause`, `userId`) and emitted via
+ * structured logging from the throw site, so they're still available
+ * to operators without being interpolated into a string that may end
+ * up in shared log storage or HTTP error bodies.
  */
 export class ScheduleSyncError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly userId: string;
+  // `cause` is the standard ES2022 field; declaring it explicitly so
+  // TypeScript infers it on instances and the controller can pass it
+  // through to logger context if needed.
+  override readonly cause?: unknown;
+  constructor(userId: string, cause?: unknown) {
+    super('schedule sync failed');
     this.name = 'ScheduleSyncError';
+    this.userId = userId;
+    this.cause = cause;
   }
 }
 
@@ -122,27 +145,23 @@ export class UsersService {
   /**
    * Apply a cadence patch and re-register the user's repeatable jobs.
    * See class doc for the failure-mode contract.
+   *
+   * No pre-read: `UsersRepo.updateCadence` already returns `null` for
+   * the missing-row case, so an extra `findById` round-trip would only
+   * pay for itself if it could prevent the race — but it cannot, the
+   * row can still vanish between the read and the write. Relying on
+   * the write's own null signal saves an Appwrite call on every PATCH
+   * without changing the failure semantics.
    */
   async updateCadence(userId: string, patch: UpdateCadenceInput): Promise<MeProfile> {
-    // Cheap pre-check so we don't burn an Appwrite write on a user
-    // whose row vanished between session and patch. Without this the
-    // repo's updateDocument would surface a 404 that's harder for the
-    // controller to map back to the typed error.
-    const existing = await this.users.findById(userId);
-    if (!existing) throw new UserNotFoundError(userId);
-
     // 1. Persist the patch. Any failure here propagates as-is — the
     //    controller maps an unknown throw to 500 and we deliberately
     //    do NOT trigger the schedule sync, because no new cadence
     //    actually landed.
     //
-    //    `updateCadence` returns `null` when the row vanished between
-    //    our pre-read and this write — that's the concurrent-delete
-    //    race window, not an Appwrite outage. Map it to the same
-    //    `UserNotFoundError` the pre-read already uses so the
-    //    controller still answers `404 not_found` instead of falling
-    //    through to a 500. Without this branch, deleting a user
-    //    mid-PATCH would surface as a generic upstream error.
+    //    `updateCadence` returns `null` for the deleted-user race —
+    //    map it to `UserNotFoundError` so the controller answers
+    //    `404 not_found` instead of falling through to a 500.
     const updated = await this.users.updateCadence(userId, patch);
     if (!updated) throw new UserNotFoundError(userId);
 
@@ -154,19 +173,19 @@ export class UsersService {
     try {
       await this.schedule.upsertJobsForUser(userId);
     } catch (err) {
-      // Log the full error (not just `message`) so pino captures the
-      // stack trace and any extra adapter context — without it,
-      // production 502s are hard to root-cause from logs alone, and
-      // the controller deliberately strips the message before it
-      // reaches the client to avoid leaking adapter internals.
+      // Structured log: `userId` is a separate field (so a future
+      // pino redact rule can scrub it from shared log storage if
+      // policy demands), and `err` carries the full stack + adapter
+      // context for production debugging. Crucially, neither lands
+      // in the message string of the thrown ScheduleSyncError — that
+      // string surfaces in the HTTP body via the controller, so
+      // keeping it generic prevents adapter internals from reaching
+      // clients.
       this.logger.warn(
-        { err },
-        `schedule.upsertJobsForUser failed for ${userId}`,
+        { err, userId },
+        'schedule.upsertJobsForUser failed',
       );
-      const message = err instanceof Error ? err.message : String(err);
-      throw new ScheduleSyncError(
-        `schedule sync failed for user ${userId}: ${message}`,
-      );
+      throw new ScheduleSyncError(userId, err);
     }
 
     return toMeProfile(updated);

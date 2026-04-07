@@ -27,6 +27,12 @@ It introduces:
    - missing `xr_session` cookie
    - signature mismatch (tampered cookie)
    - malformed payload (no `userId` string)
+   - missing or non-numeric `issuedAt` in the payload
+   - cookie older than `sessionMaxAgeSec` (server-side expiry, in
+     addition to the browser's `Max-Age` — prevents replay of stolen
+     cookies past the session lifetime)
+   - `issuedAt` more than the configured clock-skew window in the
+     future (rejects tampered timestamps that try to bypass expiry)
 
    Lives in `src/common/` because the digest endpoints in milestone #11
    reuse it. The guard is deliberately Passport-free — it has zero
@@ -40,12 +46,19 @@ It introduces:
 3. **`UsersController`** (`src/users/users.controller.ts`) with two
    endpoints, both behind `SessionGuard`:
    - `GET /me` — loads the user via `UsersRepo.findById(req.user.id)`
-     and returns the documented `/me` payload.
+     and returns the documented `/me` payload. Returns `404 not_found`
+     when the session cookie is valid but the backing `users` row no
+     longer exists (deleted account, manual cleanup, or a stale cookie
+     issued before the row was reset).
    - `PATCH /me` — validates the body with a strict zod schema
      (`pollIntervalMin: int >= 5` optional, `digestIntervalMin: int >= 15`
      optional, at least one field required, unknown keys rejected),
      calls `UsersService.updateCadence`, and returns the same `/me`
-     payload reflecting the post-update state.
+     payload reflecting the post-update state. Returns `404 not_found`
+     for the same deleted-user case as `GET /me` — including the
+     concurrent-delete race where the row vanishes between the
+     repo's read and write — so a deleted account never surfaces as
+     a generic 500.
 
 4. **`UsersService`** (`src/users/users.service.ts`) — the orchestrator
    for the patch flow. `updateCadence(userId, patch)`:
@@ -140,7 +153,13 @@ clients always see numbers, never `undefined`.
   `ScheduleService.upsertJobsForUser` is invoked exactly once with
   the caller's user id.
 - [ ] Both endpoints return `401` when the `xr_session` cookie is
-  missing, malformed, or has a bad signature.
+  missing, malformed, has a bad signature, is missing/has a non-numeric
+  `issuedAt`, is older than `sessionMaxAgeSec`, or is dated more than
+  the clock-skew window in the future.
+- [ ] Both endpoints return `404 not_found` when the session cookie
+  is valid but the backing `users` row no longer exists (covers both
+  the read path and the concurrent-delete race window inside
+  `UsersService.updateCadence`).
 - [ ] An invalid PATCH body returns `400` with a `validation_failed`
   error code; the request never reaches the repo.
 - [ ] If `UsersRepo.updateCadence` throws, the schedule sync is not

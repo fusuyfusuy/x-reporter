@@ -190,55 +190,105 @@ describe('UsersService.updateCadence', () => {
       );
 
     expect(err).toBeInstanceOf(ScheduleSyncError);
-    // The wrapper preserves the underlying message for log surface.
-    expect((err as Error).message).toContain('schedule sync failed');
+    // The wrapper preserves the underlying error on `cause` for
+    // structured logging without leaking it into `.message` (which
+    // would otherwise reach the HTTP body via the controller's
+    // exception filter and shared log storage).
+    expect((err as ScheduleSyncError).cause).toBeInstanceOf(Error);
+    expect(((err as ScheduleSyncError).cause as Error).message).toBe(
+      'schedule sync failed',
+    );
+    expect((err as Error).message).toBe('schedule sync failed');
     // The repo write *did* commit — only the post-write side effect
     // failed. That's expected; next successful PATCH reconciles.
     expect(scheduleState.calls).toEqual(['u_abc']);
   });
 
-  it('throws UserNotFoundError when the user row vanishes between session and patch', async () => {
-    const { repo } = makeFakeRepo([]);
-    const { schedule } = makeFakeSchedule();
+  it('throws UserNotFoundError when the row is missing on PATCH (deleted-user / race window)', async () => {
+    // No pre-read: the service relies on `UsersRepo.updateCadence`
+    // returning `null` to detect the deleted-user case, which covers
+    // both "row was already gone before the request" and "row
+    // disappeared between any external check and this write" — the
+    // fake repo collapses both into the same code path. We assert
+    // the typed error AND that schedule sync did not run, since the
+    // BullMQ implementation in #5 must never leak a repeatable job
+    // for a deleted user.
+    const { repo, state: repoState } = makeFakeRepo([]);
+    const { schedule, state: scheduleState } = makeFakeSchedule();
     const service = new UsersService(repo, schedule);
     await expect(
       service.updateCadence('u_missing', { pollIntervalMin: 10 }),
     ).rejects.toBeInstanceOf(UserNotFoundError);
+    // The single-round-trip contract: exactly one updateCadence call,
+    // no preceding findById. This locks the optimization in place so
+    // a future "defensive" pre-read can't sneak back in and double
+    // the Appwrite traffic on every PATCH.
+    expect(repoState.updateCalls).toHaveLength(1);
+    expect(scheduleState.calls).toEqual([]);
   });
 
-  it('throws UserNotFoundError when the row is deleted between pre-read and updateCadence (race window)', async () => {
-    // The pre-read in `updateCadence` is a cheap optimization, not a
-    // synchronization primitive — there is a real time window where a
-    // concurrent admin delete (or another tab calling DELETE /me in
-    // #11) can land between `findById` and `updateCadence`. The repo's
-    // updateDocument would surface that as a raw Appwrite 404, and
-    // without explicit handling the controller would map it to a 500
-    // instead of the documented `404 not_found`. We simulate the race
-    // by deleting the row from the fake repo state mid-flight via a
-    // findById hook that vanishes the record after returning it once.
+  it('does not pre-read before updateCadence on the happy path either', async () => {
+    // Locks the contract that the service makes exactly one repo
+    // call (the write) on success. The redundant findById was
+    // removed so PATCH /me costs one Appwrite round-trip, not two.
     const { repo, state: repoState } = makeFakeRepo([baseRecord]);
-    const { schedule, state: scheduleState } = makeFakeSchedule();
-
-    // Wrap the existing fake's findById so the row disappears the
-    // moment the service is done reading it. The next call to
-    // updateCadence then sees an empty Map and returns null (the
-    // documented "row gone" signal), which the service must map to
-    // UserNotFoundError.
+    let findByIdCalls = 0;
     const originalFindById = repo.findById.bind(repo);
     repo.findById = async (id: string) => {
-      const result = await originalFindById(id);
-      repoState.records.delete(id);
-      return result;
+      findByIdCalls++;
+      return originalFindById(id);
     };
-
+    const { schedule } = makeFakeSchedule();
     const service = new UsersService(repo, schedule);
-    await expect(
-      service.updateCadence('u_abc', { pollIntervalMin: 30 }),
-    ).rejects.toBeInstanceOf(UserNotFoundError);
+    await service.updateCadence('u_abc', { pollIntervalMin: 30 });
+    expect(findByIdCalls).toBe(0);
+    expect(repoState.updateCalls).toHaveLength(1);
+  });
 
-    // The schedule sync must NOT have run — there is no row to
-    // schedule jobs against, and #5's BullMQ implementation would
-    // otherwise leak a job for a deleted user.
-    expect(scheduleState.calls).toEqual([]);
+  it('does not embed userId or adapter details in error messages or HTTP-bound strings', async () => {
+    // PII / leak guard: `UserNotFoundError` and `ScheduleSyncError`
+    // both surface their `.message` to the controller, which then
+    // serializes it into the response body or hands it to the global
+    // exception filter. Embedding `userId` or the raw adapter error
+    // would leak a stable identifier and internal scheduler details
+    // into shared log storage. The data is still available on the
+    // instance via `userId` / `cause` for structured logging.
+    const { repo } = makeFakeRepo([]);
+    const { schedule } = makeFakeSchedule();
+    const service = new UsersService(repo, schedule);
+    let notFoundErr: unknown;
+    try {
+      await service.updateCadence('u_secret_id_123', { pollIntervalMin: 10 });
+    } catch (e) {
+      notFoundErr = e;
+    }
+    expect(notFoundErr).toBeInstanceOf(UserNotFoundError);
+    expect((notFoundErr as Error).message).toBe('user not found');
+    expect((notFoundErr as Error).message).not.toContain('u_secret_id_123');
+    // The instance still carries the userId for tests / structured logs.
+    expect((notFoundErr as UserNotFoundError).userId).toBe('u_secret_id_123');
+
+    // Same guarantee for the schedule failure path. Use the seeded
+    // baseRecord id ('u_abc') so the repo write succeeds and the
+    // service actually reaches the schedule sync — that's the only
+    // code path where ScheduleSyncError gets thrown. The leak guard
+    // is then checked by ensuring 'u_abc' does NOT appear in the
+    // exception message string.
+    const { repo: repo2 } = makeFakeRepo([baseRecord]);
+    const { schedule: schedule2, state: scheduleState2 } = makeFakeSchedule();
+    scheduleState2.behavior = 'throw';
+    const service2 = new UsersService(repo2, schedule2);
+    let scheduleErr: unknown;
+    try {
+      await service2.updateCadence('u_abc', { pollIntervalMin: 10 });
+    } catch (e) {
+      scheduleErr = e;
+    }
+    expect(scheduleErr).toBeInstanceOf(ScheduleSyncError);
+    expect((scheduleErr as Error).message).toBe('schedule sync failed');
+    expect((scheduleErr as Error).message).not.toContain('u_abc');
+    // Adapter cause is preserved on the instance for logging.
+    expect((scheduleErr as ScheduleSyncError).userId).toBe('u_abc');
+    expect((scheduleErr as ScheduleSyncError).cause).toBeInstanceOf(Error);
   });
 });

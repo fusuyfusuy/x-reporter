@@ -72,7 +72,7 @@ function makeFakeService(): { service: UsersService; state: FakeServiceState } {
         throw new UserNotFoundError(userId);
       }
       if (state.updateBehavior === 'schedule-failed') {
-        throw new ScheduleSyncError('boom');
+        throw new ScheduleSyncError(userId, new Error('boom'));
       }
       if (state.updateBehavior === 'throw') {
         throw new Error('boom');

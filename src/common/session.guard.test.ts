@@ -228,14 +228,16 @@ describe('SessionGuard', () => {
       expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
     });
 
-    it('throws Unauthorized when the session is older than sessionMaxAgeSec', () => {
-      // Mint a cookie with an `issuedAt` that's exactly the configured
-      // max age + 1 second in the past. The signature is valid, the
-      // payload is well-formed, the only thing wrong is that the
-      // session lifetime has elapsed — server-side expiry must reject
-      // it instead of trusting the browser to have honored Max-Age.
+    it('throws Unauthorized when the session is older than sessionMaxAgeSec (beyond skew window)', () => {
+      // Mint a cookie with an `issuedAt` 1 minute past the configured
+      // max age. Comfortably outside the 5-second clock-skew tolerance
+      // so this asserts the actual expiry, not a borderline value.
+      // The signature is valid and the payload is well-formed; the
+      // only thing wrong is that the session lifetime has elapsed,
+      // and server-side expiry must reject it instead of trusting
+      // the browser to have honored Max-Age.
       const guard = makeGuard();
-      const expiredIssuedAt = Date.now() - (MAX_AGE_SEC * 1000 + 1000);
+      const expiredIssuedAt = Date.now() - (MAX_AGE_SEC * 1000 + 60_000);
       const value = signCookieValue(
         { userId: 'u_abc', issuedAt: expiredIssuedAt },
         SECRET,
@@ -273,6 +275,22 @@ describe('SessionGuard', () => {
       // log everyone out one tick early.
       const guard = makeGuard();
       const issuedAt = Date.now() - (MAX_AGE_SEC * 1000 - 1000);
+      const value = signCookieValue({ userId: 'u_abc', issuedAt }, SECRET);
+      const req: FakeReq = {
+        headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
+      };
+      expect(guard.canActivate(makeContext(req))).toBe(true);
+      expect(req.user?.id).toBe('u_abc');
+    });
+
+    it('accepts a session that is 2 seconds past the max age (within clock-skew tolerance)', () => {
+      // Symmetric clock-skew handling: a verifier whose clock is a
+      // few seconds ahead of the issuer must not log users out
+      // early just because the cookie's `issuedAt` looks slightly
+      // too old. The 5-second tolerance applies to BOTH bounds, so
+      // 2 seconds past `maxAgeSec` should still verify.
+      const guard = makeGuard();
+      const issuedAt = Date.now() - (MAX_AGE_SEC * 1000 + 2_000);
       const value = signCookieValue({ userId: 'u_abc', issuedAt }, SECRET);
       const req: FakeReq = {
         headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
