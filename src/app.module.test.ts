@@ -21,6 +21,15 @@ describe('AppModule (e2e-lite)', () => {
     process.env.APPWRITE_PROJECT_ID = 'test_project';
     process.env.APPWRITE_API_KEY = 'test_key';
     process.env.APPWRITE_DATABASE_ID = 'xreporter_test';
+    // X OAuth + crypto + session vars are required as of milestone #3. The
+    // values don't have to be real — AppwriteService is stubbed and
+    // AuthService never calls X in this lite e2e run.
+    process.env.X_CLIENT_ID = 'test_x_client_id';
+    process.env.X_CLIENT_SECRET = 'test_x_client_secret';
+    process.env.X_REDIRECT_URI = 'http://localhost:3000/auth/x/callback';
+    process.env.X_SCOPES = 'tweet.read users.read offline.access';
+    process.env.TOKEN_ENC_KEY = Buffer.alloc(32, 0).toString('base64');
+    process.env.SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 
