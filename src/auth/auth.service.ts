@@ -50,6 +50,24 @@ export class AuthExpiredError extends Error {
 }
 
 /**
+ * Thrown by {@link AuthService.handleCallback} when the inbound callback
+ * is malformed or has been tampered with: missing/expired/invalid state
+ * cookie, signature mismatch, or query-state mismatch. These are all
+ * client-side faults and should surface as `400` to the browser.
+ *
+ * Anything *not* of this type that escapes `handleCallback` (X timeouts,
+ * token-endpoint 5xx, Appwrite write failures, ...) is a server-side or
+ * upstream-dependency failure, and the controller maps it to `502` so
+ * monitoring and clients can tell the two cases apart.
+ */
+export class InvalidAuthCallbackError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidAuthCallbackError';
+  }
+}
+
+/**
  * Construction-time configuration. Built once at boot from `Env` by
  * `AuthModule.forRoot(env)`.
  */
@@ -147,29 +165,29 @@ export class AuthService {
    * signed session cookie value.
    */
   async handleCallback(input: HandleCallbackInput): Promise<HandleCallbackResult> {
-    if (!input.stateCookieValue || input.stateCookieValue.length === 0) {
-      throw new Error('missing state cookie');
+    if (!input.stateCookieValue) {
+      throw new InvalidAuthCallbackError('missing state cookie');
     }
     const cookie = verifyCookieValue<StateCookiePayload>(
       input.stateCookieValue,
       this.config.sessionSecret,
     );
     if (!cookie) {
-      throw new Error('invalid state cookie');
+      throw new InvalidAuthCallbackError('invalid state cookie');
     }
     if (
       typeof cookie.state !== 'string' ||
       typeof cookie.codeVerifier !== 'string' ||
       typeof cookie.createdAt !== 'number'
     ) {
-      throw new Error('invalid state cookie payload');
+      throw new InvalidAuthCallbackError('invalid state cookie payload');
     }
     const ageMs = Date.now() - cookie.createdAt;
     if (ageMs > this.config.stateCookieMaxAgeSec * 1000) {
-      throw new Error('state cookie expired');
+      throw new InvalidAuthCallbackError('state cookie expired');
     }
     if (cookie.state !== input.state) {
-      throw new Error('state mismatch');
+      throw new InvalidAuthCallbackError('state mismatch');
     }
 
     // 1. Exchange the code for tokens.

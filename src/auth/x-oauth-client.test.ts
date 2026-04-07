@@ -147,6 +147,29 @@ describe('HttpXOAuthClient.refresh', () => {
     expect(headers.get('authorization')).toContain('Basic ');
   });
 
+  it('falls back to the existing refresh_token when X omits it from the response', async () => {
+    // RFC 6749 §6 makes the refresh_token field OPTIONAL on the refresh
+    // response — the server may omit it when the existing token is still
+    // valid. The client must reuse the previous refresh token in that
+    // case rather than rejecting the response or losing the token.
+    const { fetch: fakeImpl } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          token_type: 'bearer',
+          access_token: 'access-rotated',
+          // no refresh_token field
+          expires_in: 7200,
+          scope: 'tweet.read offline.access',
+        },
+      },
+    ]);
+    const client = new HttpXOAuthClient(baseConfig, fakeImpl);
+    const result = await client.refresh('previous-refresh-token');
+    expect(result.accessToken).toBe('access-rotated');
+    expect(result.refreshToken).toBe('previous-refresh-token');
+  });
+
   it('throws when refresh is rejected by X', async () => {
     const { fetch: fakeImpl } = fakeFetch([
       { status: 401, body: { error: 'invalid_grant' } },

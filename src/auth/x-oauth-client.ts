@@ -94,6 +94,22 @@ export const XTokenResponseSchema = z.object({
 });
 
 /**
+ * Refresh-response schema. Per RFC 6749 §6 the authorization server MAY
+ * omit `refresh_token` when the existing refresh token remains valid, and
+ * X's docs do not contradict that. So `refresh_token` is optional here and
+ * the caller falls back to the previous refresh token when absent. Keep
+ * the strict {@link XTokenResponseSchema} for the initial code-exchange
+ * path where the server is required to issue both tokens.
+ */
+export const XRefreshTokenResponseSchema = z.object({
+  token_type: z.string(),
+  access_token: z.string().min(1),
+  refresh_token: z.string().min(1).optional(),
+  expires_in: z.number().int().positive(),
+  scope: z.string().min(1),
+});
+
+/**
  * Zod schema for `GET /2/users/me` (X API v2). Only the fields the auth
  * flow actually consumes are required; everything else is ignored.
  */
@@ -149,7 +165,7 @@ export class HttpXOAuthClient implements XOAuthClient {
       refresh_token: refreshToken,
       client_id: this.config.clientId,
     });
-    return await this.postToken(body);
+    return await this.postToken(body, refreshToken);
   }
 
   async getMe(accessToken: string): Promise<XUserInfo> {
@@ -169,7 +185,19 @@ export class HttpXOAuthClient implements XOAuthClient {
     return { xUserId: parsed.data.id, handle: parsed.data.username };
   }
 
-  private async postToken(body: URLSearchParams): Promise<XTokenResponse> {
+  /**
+   * POST the token endpoint and parse the response.
+   *
+   * When `fallbackRefreshToken` is supplied (the refresh-token flow),
+   * `refresh_token` may be omitted from the response per RFC 6749 §6 — in
+   * that case the previous refresh token is reused. The initial code
+   * exchange flow does NOT pass a fallback, so `refresh_token` is required
+   * there via {@link XTokenResponseSchema}.
+   */
+  private async postToken(
+    body: URLSearchParams,
+    fallbackRefreshToken?: string,
+  ): Promise<XTokenResponse> {
     const basicAuth = Buffer.from(
       `${this.config.clientId}:${this.config.clientSecret}`,
     ).toString('base64');
@@ -190,6 +218,15 @@ export class HttpXOAuthClient implements XOAuthClient {
       throw new Error(`x oauth token endpoint failed: ${res.status} ${text}`);
     }
     const json: unknown = await res.json();
+    if (fallbackRefreshToken !== undefined) {
+      const parsed = XRefreshTokenResponseSchema.parse(json);
+      return {
+        accessToken: parsed.access_token,
+        refreshToken: parsed.refresh_token ?? fallbackRefreshToken,
+        expiresIn: parsed.expires_in,
+        scope: parsed.scope,
+      };
+    }
     const parsed = XTokenResponseSchema.parse(json);
     return {
       accessToken: parsed.access_token,

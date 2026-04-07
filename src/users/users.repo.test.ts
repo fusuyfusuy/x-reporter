@@ -135,6 +135,18 @@ describe('UsersRepo.upsertByXUserId', () => {
     const after = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
     expect(after.status).toBe('active');
   });
+
+  it('does NOT unpause a paused user, even when their handle changes', async () => {
+    // A paused user is an explicit user/admin choice — re-auth (or a
+    // handle rename) should never silently undo it. Only auth_expired
+    // rows are revived to active by upsertByXUserId.
+    const { repo } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'old_handle' });
+    await repo.setStatus(u.id, 'paused');
+    const after = await repo.upsertByXUserId({ xUserId: '12345', handle: 'new_handle' });
+    expect(after.status).toBe('paused');
+    expect(after.handle).toBe('new_handle');
+  });
 });
 
 describe('UsersRepo.setStatus', () => {

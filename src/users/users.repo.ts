@@ -130,17 +130,20 @@ export class UsersRepo {
     existing: UserRecord,
     input: { xUserId: string; handle: string },
   ): Promise<UserRecord> {
-    const needsUpdate =
-      existing.handle !== input.handle || existing.status === 'auth_expired';
-    if (!needsUpdate) return existing;
+    const handleChanged = existing.handle !== input.handle;
+    const reviveAuth = existing.status === 'auth_expired';
+    if (!handleChanged && !reviveAuth) return existing;
+    // Only flip status to 'active' when reviving an auth_expired row. A
+    // paused user who happened to rename their X handle must stay paused
+    // — `paused` is an explicit user/admin choice, not something a re-auth
+    // should silently undo.
+    const data: Record<string, unknown> = { handle: input.handle };
+    if (reviveAuth) data.status = 'active';
     const updated = await this.db.updateDocument({
       databaseId: this.databaseId,
       collectionId: COLLECTION_ID,
       documentId: existing.id,
-      data: {
-        handle: input.handle,
-        status: 'active',
-      },
+      data,
     });
     return toUserRecord(updated);
   }

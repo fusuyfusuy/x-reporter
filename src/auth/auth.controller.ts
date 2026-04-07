@@ -1,5 +1,5 @@
 import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { AuthService, InvalidAuthCallbackError } from './auth.service';
 import { type CookieOptions, parseCookies, serializeCookie } from './cookies';
 
 /**
@@ -41,10 +41,14 @@ interface ExpressLikeResponse {
  * only translates between HTTP and the service's plain inputs/outputs.
  *
  * Error policy:
- *   - Missing query params or missing/invalid state cookie → 400.
- *   - `AuthExpiredError` from the service → 401 (the user must re-auth).
- *   - Any other throw from the service → 400 with a generic message. We
- *     never leak stack traces or service internals to the response body.
+ *   - Missing query params or missing state cookie → 400.
+ *   - `InvalidAuthCallbackError` from the service (state mismatch, expired
+ *     state cookie, signature failure) → 400.
+ *   - Any other throw from the service (X timeout, token endpoint 5xx,
+ *     Appwrite write failure, ...) → 502. These are upstream / dependency
+ *     failures, not bad client input, and conflating them with 4xx hides
+ *     real outages from monitoring.
+ *   - We never leak stack traces or service internals to the response body.
  */
 
 /** Cookie names used by the auth flow. */
@@ -128,16 +132,23 @@ export class AuthController {
       // one installs the session cookie.
       res.setHeader('Set-Cookie', [this.clearStateCookieHeader(), sessionCookie]);
       res.redirect(302, '/me');
-    } catch (_err) {
+    } catch (err) {
       res.setHeader('Set-Cookie', this.clearStateCookieHeader());
-      // Every callback error (state mismatch, expired state cookie, signature
-      // mismatch, code-exchange failure, persistence failure, ...) becomes a
-      // generic 400. `handleCallback` does not perform token refresh, so
+      // State validation failures (mismatched state, expired/invalid state
+      // cookie, signature mismatch) are bad client input → 400. Anything
+      // else — X timeouts, X token endpoint 5xx, Appwrite write failures —
+      // is an upstream dependency failure → 502, so monitoring and clients
+      // can tell "the user clicked a stale link" apart from "X is down".
+      // `handleCallback` does not perform token refresh, so
       // `AuthExpiredError` is unreachable here — `getValidAccessToken` is
       // the only path that throws it, and that runs from background workers.
       // The underlying message stays in the server logs via nestjs-pino —
       // only a short string is returned in the body.
-      res.status(400).send('invalid auth callback');
+      if (err instanceof InvalidAuthCallbackError) {
+        res.status(400).send('invalid auth callback');
+        return;
+      }
+      res.status(502).send('auth callback dependency failure');
     }
   }
 

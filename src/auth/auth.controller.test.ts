@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { AuthController } from './auth.controller';
-import type { AuthService } from './auth.service';
+import { type AuthService, InvalidAuthCallbackError } from './auth.service';
 
 interface FakeRes {
   _status?: number;
@@ -147,13 +147,39 @@ describe('AuthController', () => {
       expect(cleared).toContain('Max-Age=0');
     });
 
-    it('returns 400 when the query lacks required params', async () => {
-      const fakeService = {
-        handleCallback: async () => {
+    /**
+     * Build a fake AuthService whose handleCallback records every call.
+     * Used by the fast-fail tests below to assert the controller short-
+     * circuits *before* invoking the service — a regression where the
+     * controller forwarded malformed input to handleCallback would
+     * otherwise still pass if the catch-all swallowed the resulting throw.
+     */
+    function spyService(): {
+      service: AuthService;
+      calls: Array<unknown>;
+    } {
+      const calls: unknown[] = [];
+      const service = {
+        // biome-ignore lint/suspicious/noExplicitAny: spy
+        handleCallback: (async (input: any) => {
+          calls.push(input);
           throw new Error('should not be called');
-        },
+          // biome-ignore lint/suspicious/noExplicitAny: spy
+        }) as any,
       } as unknown as AuthService;
-      const controller = new AuthController(fakeService, {
+      return { service, calls };
+    }
+
+    function clearedStateCookie(res: FakeRes): string | undefined {
+      const cookies = res._headers.get('set-cookie');
+      if (!cookies) return undefined;
+      const list = Array.isArray(cookies) ? cookies : [cookies];
+      return list.find((c) => c.startsWith('xr_oauth_state='));
+    }
+
+    it('returns 400 when the query lacks required params, without invoking the service', async () => {
+      const { service, calls } = spyService();
+      const controller = new AuthController(service, {
         cookieSecure: false,
         stateCookieMaxAgeSec: 600,
         sessionCookieMaxAgeSec: 100,
@@ -162,15 +188,15 @@ describe('AuthController', () => {
       const res = fakeRes();
       await controller.callback(req, res);
       expect(res._status).toBe(400);
+      expect(calls).toHaveLength(0);
+      const cleared = clearedStateCookie(res);
+      expect(cleared).toBeDefined();
+      expect(cleared).toContain('Max-Age=0');
     });
 
-    it('returns 400 when the state cookie is missing', async () => {
-      const fakeService = {
-        handleCallback: async () => {
-          throw new Error('should not be called');
-        },
-      } as unknown as AuthService;
-      const controller = new AuthController(fakeService, {
+    it('returns 400 when the state cookie is missing, without invoking the service', async () => {
+      const { service, calls } = spyService();
+      const controller = new AuthController(service, {
         cookieSecure: false,
         stateCookieMaxAgeSec: 600,
         sessionCookieMaxAgeSec: 100,
@@ -179,12 +205,16 @@ describe('AuthController', () => {
       const res = fakeRes();
       await controller.callback(req, res);
       expect(res._status).toBe(400);
+      expect(calls).toHaveLength(0);
+      const cleared = clearedStateCookie(res);
+      expect(cleared).toBeDefined();
+      expect(cleared).toContain('Max-Age=0');
     });
 
     it('returns 400 when AuthService rejects state mismatch', async () => {
       const fakeService = {
         handleCallback: async () => {
-          throw new Error('state mismatch');
+          throw new InvalidAuthCallbackError('state mismatch');
         },
       } as unknown as AuthService;
       const controller = new AuthController(fakeService, {
@@ -199,7 +229,32 @@ describe('AuthController', () => {
       const res = fakeRes();
       await controller.callback(req, res);
       expect(res._status).toBe(400);
+      const cleared = clearedStateCookie(res);
+      expect(cleared).toBeDefined();
+      expect(cleared).toContain('Max-Age=0');
     });
 
+    it('returns 502 when AuthService throws a non-validation error (upstream failure)', async () => {
+      const fakeService = {
+        handleCallback: async () => {
+          throw new Error('x oauth token endpoint failed: 503 service unavailable');
+        },
+      } as unknown as AuthService;
+      const controller = new AuthController(fakeService, {
+        cookieSecure: false,
+        stateCookieMaxAgeSec: 600,
+        sessionCookieMaxAgeSec: 100,
+      });
+      const req = fakeReq({
+        query: { code: 'c', state: 's' },
+        cookieHeader: 'xr_oauth_state=abc',
+      });
+      const res = fakeRes();
+      await controller.callback(req, res);
+      expect(res._status).toBe(502);
+      const cleared = clearedStateCookie(res);
+      expect(cleared).toBeDefined();
+      expect(cleared).toContain('Max-Age=0');
+    });
   });
 });
