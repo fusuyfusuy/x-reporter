@@ -3,11 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import type { Env } from '../config/env';
 import { UsersRepo } from '../users/users.repo';
-import {
-  DEFAULT_FETCH_TIMEOUT_MS,
-  XApiV2Source,
-  type XApiV2SourceConfig,
-} from './x-api-v2.source';
+import { DEFAULT_FETCH_TIMEOUT_MS, XApiV2Source, type XApiV2SourceConfig } from './x-api-v2.source';
 import type { XSource } from './x-source.port';
 
 /**
