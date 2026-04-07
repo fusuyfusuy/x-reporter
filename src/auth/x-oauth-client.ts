@@ -169,20 +169,25 @@ export class HttpXOAuthClient implements XOAuthClient {
   }
 
   async getMe(accessToken: string): Promise<XUserInfo> {
-    const res = await this.fetchWithTimeout(this.config.userInfoEndpoint, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${accessToken}`,
+    return await this.fetchWithTimeout(
+      this.config.userInfoEndpoint,
+      {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`x users/me endpoint failed: ${res.status} ${text}`);
-    }
-    const json: unknown = await res.json();
-    const parsed = XUserInfoResponseSchema.parse(json);
-    return { xUserId: parsed.data.id, handle: parsed.data.username };
+      async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`x users/me endpoint failed: ${res.status} ${text}`);
+        }
+        const json: unknown = await res.json();
+        const parsed = XUserInfoResponseSchema.parse(json);
+        return { xUserId: parsed.data.id, handle: parsed.data.username };
+      },
+    );
   }
 
   /**
@@ -201,39 +206,44 @@ export class HttpXOAuthClient implements XOAuthClient {
     const basicAuth = Buffer.from(
       `${this.config.clientId}:${this.config.clientSecret}`,
     ).toString('base64');
-    const res = await this.fetchWithTimeout(this.config.tokenEndpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'application/json',
-        authorization: `Basic ${basicAuth}`,
+    return await this.fetchWithTimeout(
+      this.config.tokenEndpoint,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+          authorization: `Basic ${basicAuth}`,
+        },
+        body: body.toString(),
       },
-      body: body.toString(),
-    });
-    if (!res.ok) {
-      // Read the body for diagnostics, but never log token contents — the
-      // body of a token endpoint failure is an error envelope, not a real
-      // token, so it's safe to surface in the message.
-      const text = await res.text().catch(() => '');
-      throw new Error(`x oauth token endpoint failed: ${res.status} ${text}`);
-    }
-    const json: unknown = await res.json();
-    if (fallbackRefreshToken !== undefined) {
-      const parsed = XRefreshTokenResponseSchema.parse(json);
-      return {
-        accessToken: parsed.access_token,
-        refreshToken: parsed.refresh_token ?? fallbackRefreshToken,
-        expiresIn: parsed.expires_in,
-        scope: parsed.scope,
-      };
-    }
-    const parsed = XTokenResponseSchema.parse(json);
-    return {
-      accessToken: parsed.access_token,
-      refreshToken: parsed.refresh_token,
-      expiresIn: parsed.expires_in,
-      scope: parsed.scope,
-    };
+      async (res) => {
+        if (!res.ok) {
+          // Read the body for diagnostics, but never log token contents —
+          // the body of a token endpoint failure is an error envelope, not
+          // a real token, so it's safe to surface in the message.
+          const text = await res.text().catch(() => '');
+          throw new Error(`x oauth token endpoint failed: ${res.status} ${text}`);
+        }
+        const json: unknown = await res.json();
+        if (fallbackRefreshToken !== undefined) {
+          const parsed = XRefreshTokenResponseSchema.parse(json);
+          return {
+            accessToken: parsed.access_token,
+            refreshToken: parsed.refresh_token ?? fallbackRefreshToken,
+            expiresIn: parsed.expires_in,
+            scope: parsed.scope,
+          };
+        }
+        const parsed = XTokenResponseSchema.parse(json);
+        return {
+          accessToken: parsed.access_token,
+          refreshToken: parsed.refresh_token,
+          expiresIn: parsed.expires_in,
+          scope: parsed.scope,
+        };
+      },
+    );
   }
 
   /**
@@ -241,16 +251,26 @@ export class HttpXOAuthClient implements XOAuthClient {
    * can never hang the request indefinitely. Translates the resulting
    * `AbortError` into a clear, redacted error message — no token data is
    * ever in scope here, only the URL.
+   *
+   * Critically, the timeout scope **also covers body consumption**. The
+   * `consume` callback receives the `Response` and reads its body via
+   * `res.json()`/`res.text()`; the timer is only cleared after `consume`
+   * resolves. Without this, a server that flushes headers and then stalls
+   * the body stream would still hang the request indefinitely — `fetch()`
+   * resolves as soon as headers arrive, and `Response.json()` separately
+   * reads the stream to completion.
    */
-  private async fetchWithTimeout(
+  private async fetchWithTimeout<T>(
     url: string,
     init: RequestInit,
-  ): Promise<Response> {
+    consume: (res: Response) => Promise<T>,
+  ): Promise<T> {
     const timeoutMs = this.config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+      const res = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      return await consume(res);
     } catch (err) {
       if (isAbortError(err)) {
         throw new Error(`x request timed out after ${timeoutMs}ms: ${url}`);

@@ -230,6 +230,38 @@ describe('HttpXOAuthClient fetch timeout', () => {
     );
     await expect(client.getMe('any-token')).rejects.toThrow(/timed out/i);
   });
+
+  it('aborts when the response headers arrive but the body stalls past fetchTimeoutMs', async () => {
+    // Simulate a server that flushes headers immediately (so `fetch()`
+    // resolves with a Response) but never finishes streaming the body.
+    // The timeout scope must cover `res.json()` too — without that,
+    // `clearTimeout` would fire on the headers and the body read would
+    // hang forever.
+    const stallingBodyFetch = ((_url: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream({
+        start(_controller) {
+          // Never enqueue, never close. The signal hookup below is the
+          // only way this stream becomes done.
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted') as Error & { name: string };
+            err.name = 'AbortError';
+            _controller.error(err);
+          });
+        },
+      });
+      return Promise.resolve(
+        new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as unknown as typeof fetch;
+    const client = new HttpXOAuthClient(
+      { ...baseConfig, fetchTimeoutMs: 20 },
+      stallingBodyFetch,
+    );
+    await expect(client.getMe('any-token')).rejects.toThrow(/timed out/i);
+  });
 });
 
 describe('XTokenResponseSchema', () => {

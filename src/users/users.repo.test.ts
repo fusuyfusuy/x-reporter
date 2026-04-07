@@ -40,6 +40,21 @@ class FakeDatabases {
     documentId: string;
     data: Record<string, unknown>;
   }): Promise<Record<string, unknown> & { $id: string }> {
+    // Mirror the real Appwrite collection's `xUserId_unique` index — two
+    // concurrent first-time sign-ins for the same X user must produce a
+    // 409 on the loser, which is what `UsersRepo.upsertByXUserId()`'s
+    // post-conflict re-read branch relies on. Without this, the fake
+    // would silently let both writes through and the race-recovery path
+    // would never be exercised.
+    const xUserId = params.data.xUserId;
+    if (
+      typeof xUserId === 'string' &&
+      Array.from(this.docs.values()).some((doc) => doc.xUserId === xUserId)
+    ) {
+      const err = new Error('xUserId already exists') as Error & { code: number };
+      err.code = 409;
+      throw err;
+    }
     if (this.docs.has(params.documentId)) {
       const err = new Error('document already exists') as Error & { code: number };
       err.code = 409;
@@ -134,6 +149,49 @@ describe('UsersRepo.upsertByXUserId', () => {
     await repo.setStatus(u.id, 'auth_expired');
     const after = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
     expect(after.status).toBe('active');
+  });
+
+  it('recovers from a concurrent first-time sign-in race (createDocument 409)', async () => {
+    // Simulate two concurrent first-time sign-ins for the same X user:
+    // both calls see no existing row in their initial findByXUserId, both
+    // race to createDocument, the database's xUserId unique index lets
+    // one win and rejects the loser with 409. The loser's upsert path
+    // must catch the 409, re-read, and return the winner row instead of
+    // bubbling the error.
+    const { repo, db } = makeRepo();
+
+    // Override findByXUserId-equivalent listDocuments so the *first* call
+    // sees nothing (matching the pre-race state) and subsequent calls
+    // return whatever's actually in the fake. This forces the
+    // upsertByXUserId code into the create-then-conflict branch.
+    const realList = db.listDocuments.bind(db);
+    let listCalls = 0;
+    db.listDocuments = (async (params: Parameters<typeof realList>[0]) => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return { total: 0, documents: [] };
+      }
+      return realList(params);
+    }) as typeof db.listDocuments;
+
+    // Pre-seed the winner row directly so createDocument's xUserId
+    // uniqueness check fires.
+    db.docs.set('winner-id', {
+      $id: 'winner-id',
+      xUserId: '12345',
+      handle: 'fusuyfusuy',
+      status: 'active',
+      createdAt: new Date().toISOString(),
+    });
+
+    const result = await repo.upsertByXUserId({
+      xUserId: '12345',
+      handle: 'fusuyfusuy',
+    });
+    expect(result.id).toBe('winner-id');
+    expect(result.xUserId).toBe('12345');
+    expect(result.handle).toBe('fusuyfusuy');
+    expect(result.status).toBe('active');
   });
 
   it('does NOT unpause a paused user, even when their handle changes', async () => {
