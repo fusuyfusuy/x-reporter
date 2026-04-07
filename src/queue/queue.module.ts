@@ -103,6 +103,28 @@ class QueueModuleLifecycle implements OnModuleDestroy {
   ) {}
 
   async onModuleDestroy(): Promise<void> {
+    // Cold-shutdown fast path: if the shared client never opened a TCP
+    // socket (which is the case under `lazyConnect: true` whenever no
+    // command was issued — typically in unit tests that resolve the
+    // module just to assert provider registration), then there is no
+    // BullMQ in-flight work to drain on the shared client. Calling
+    // `Queue.close()` in that state would force BullMQ to lazily
+    // connect *just so it can disconnect*. Skip the queue drain in
+    // that case; BullMQ's own internal duplicated clients are still
+    // closed via their queue references in the loop below.
+    //
+    // ioredis exposes the connection lifecycle as a `status` string:
+    //   - `wait`        — never connected (lazyConnect default)
+    //   - `connecting`  — TCP handshake in flight
+    //   - `connect`     — TCP open, command channel not yet ready
+    //   - `ready`       — accepting commands
+    //   - `closing` / `close` / `end` — terminated
+    //
+    // Only the `wait` state is safe to short-circuit: any state past
+    // `connecting` means the queues may have buffered Lua scripts
+    // we still want to drain.
+    const sharedClientNeverConnected = this.client.status === 'wait';
+
     // 1. Close all queues first. Queue.close() waits for pending
     //    BullMQ operations (script evaluations, in-flight `add`s)
     //    to finish, then releases the internal connection wrapper.
@@ -116,10 +138,16 @@ class QueueModuleLifecycle implements OnModuleDestroy {
         this.logger.warn(`failed to close queue ${queue.name}: ${message}`);
       }
     }
-    // 2. Quit the shared client. Swallow errors on shutdown — if
-    //    quit fails, the process is terminating anyway, and throwing
-    //    would mask any earlier cleanup failures that we want Nest
-    //    to surface first.
+    // 2. Quit the shared client. Skip if the client never connected
+    //    (cold-shutdown fast path described above) — quit() on a
+    //    `wait`-state client is a no-op that still emits a `close`
+    //    event, which is harmless but unnecessary. Swallow errors on
+    //    shutdown either way: if quit fails, the process is
+    //    terminating anyway, and throwing would mask any earlier
+    //    cleanup failures that we want Nest to surface first.
+    if (sharedClientNeverConnected) {
+      return;
+    }
     try {
       await this.client.quit();
     } catch (err) {

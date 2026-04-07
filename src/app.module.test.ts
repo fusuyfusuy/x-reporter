@@ -4,6 +4,8 @@ import { Test } from '@nestjs/testing';
 import { AppModule } from './app.module';
 import { SESSION_COOKIE_NAME } from './auth/auth.controller';
 import { signCookieValue } from './auth/cookies';
+import { REDIS_HEALTH, type RedisHealthPort } from './queue/queue.tokens';
+import { ScheduleService } from './schedule/schedule.service';
 
 const TEST_SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
 const TEST_USER_ID = 'u_e2e_test_abc';
@@ -133,11 +135,44 @@ describe('AppModule (e2e-lite)', () => {
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 
+    // Stub the BullMQ-backed schedule + Redis ping so the test never
+    // needs a reachable Redis. The real `QueueModule.forRoot` still
+    // builds an ioredis client (lazyConnect, no socket opens at boot),
+    // but ScheduleService is the only path that would actually run a
+    // command, and the Redis health probe is the only path the
+    // controller uses — both are replaced here.
+    const fakeSchedule = {
+      async upsertJobsForUser(_userId: string) {
+        // no-op: a real BullMQ schedule write would require a live
+        // Redis. The acceptance criterion (PATCH → schedule sync) is
+        // covered by the unit-level UsersService.updateCadence test
+        // and ScheduleService unit tests; the e2e-lite test only
+        // needs the wiring to not explode.
+      },
+      async removeJobsForUser(_userId: string) {
+        // no-op
+      },
+    } as unknown as ScheduleService;
+
+    const fakeRedisHealth: RedisHealthPort = {
+      // The /health test below already accepts both `ok` and `down`,
+      // so returning a deterministic `ok` here is the simpler choice
+      // — it pins the body shape without coupling the test to whether
+      // a real Redis is running on the box.
+      async ping() {
+        return { status: 'ok' };
+      },
+    };
+
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule.forRoot()],
     })
       .overrideProvider(AppwriteService)
       .useValue(makeStubAppwrite())
+      .overrideProvider(ScheduleService)
+      .useValue(fakeSchedule)
+      .overrideProvider(REDIS_HEALTH)
+      .useValue(fakeRedisHealth)
       .compile();
 
     app = moduleRef.createNestApplication();
