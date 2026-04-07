@@ -89,11 +89,20 @@ clients always see numbers, never `undefined`.
   unless the patch supplies them.
 - Validation lives at the HTTP boundary (zod), not in the service or
   the repo. Invalid bodies produce `400` with the zod error tree under
-  the standard error envelope; they never reach the repo.
+  the standard error envelope defined in
+  [api.md#errors](../api.md#errors) — i.e. `{ error: { code, message,
+  details } }` with `code: 'validation_failed'` and the zod issue tree
+  in `details`. They never reach the repo.
+- A `PATCH /me` body MUST provide at least one of `pollIntervalMin` or
+  `digestIntervalMin`. Empty bodies (`{}`) and bodies containing only
+  unknown keys are rejected with `400 validation_failed` by the same
+  strict zod schema, so `UsersService.updateCadence` is only ever
+  called when at least one valid cadence field was supplied.
 - The session cookie name (`xr_session`) and HMAC secret are sourced
   from the constants and config already established in #3. The guard
   must not duplicate the cookie name string.
 - The `/me` response shape is fixed:
+
   ```json
   {
     "id": "u_abc",
@@ -105,6 +114,7 @@ clients always see numbers, never `undefined`.
     "createdAt": "2026-04-06T12:00:00Z"
   }
   ```
+
   No tokens, no cursors, no internal Appwrite fields (`$id`,
   `$createdAt`, etc.) are exposed.
 - `ScheduleService.upsertJobsForUser` returns `Promise<void>`. Its

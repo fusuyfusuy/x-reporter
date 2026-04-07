@@ -156,9 +156,16 @@ describe('AppModule (e2e-lite)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('GET /me without a session cookie returns 401', async () => {
+  it('GET /me without a session cookie returns 401 with the documented error envelope', async () => {
+    // Validates the full HTTP wire format, not just the controller-level
+    // exception body — confirms `SessionGuard` actually emits the
+    // documented `{ error: { code: 'unauthorized', ... } }` envelope to
+    // real clients (not Nest's default 401 shape).
     const res = await fetch(`${baseUrl}/me`);
     expect(res.status).toBe(401);
+    const body = (await res.json()) as { error?: { code?: string; details?: unknown } };
+    expect(body.error?.code).toBe('unauthorized');
+    expect(body.error?.details).toEqual({});
   });
 
   it('PATCH /me without a session cookie returns 401', async () => {

@@ -97,7 +97,7 @@ describe('UsersController GET /me', () => {
     expect(state.getCalls).toEqual(['u_abc']);
   });
 
-  it('throws 404 when the service reports the user is gone', async () => {
+  it('throws 404 with the documented error envelope when the service reports the user is gone', async () => {
     const { service, state } = makeFakeService();
     state.getBehavior = 'not-found';
     const controller = new UsersController(service);
@@ -110,9 +110,38 @@ describe('UsersController GET /me', () => {
     }
     expect(caught).toBeDefined();
     // Nest's `NotFoundException` carries an HTTP status of 404 — assert
-    // both the constructor name and the status so a future refactor
-    // can't substitute a generic Error.
+    // both the status and the body shape so the documented
+    // `{ error: { code, message, details } }` envelope from
+    // `docs/api.md#errors` stays a stable contract for clients across
+    // every error path.
     expect((caught as { getStatus?: () => number }).getStatus?.()).toBe(404);
+    const body = (caught as { getResponse: () => unknown }).getResponse();
+    expect(body).toMatchObject({
+      error: { code: 'not_found', details: {} },
+    });
+  });
+
+  it('throws 401 with the documented error envelope when req.user is missing (defensive guard)', async () => {
+    // `SessionGuard` should always populate `req.user.id` before this
+    // controller runs, so this branch is unreachable in production.
+    // But the controller still has a belt-and-braces check for it
+    // (see `requireUserId` in users.controller.ts), which should map
+    // to `401 unauthorized` — not 404 — because the underlying
+    // problem is "no authenticated user", not "the row is missing".
+    const { service } = makeFakeService();
+    const controller = new UsersController(service);
+    let caught: unknown;
+    try {
+      await controller.getMe({} as never);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as { getStatus?: () => number }).getStatus?.()).toBe(401);
+    const body = (caught as { getResponse: () => unknown }).getResponse();
+    expect(body).toMatchObject({
+      error: { code: 'unauthorized', details: {} },
+    });
   });
 
   it('rethrows unknown errors so the global filter can map them to 500', async () => {
@@ -254,7 +283,7 @@ describe('UsersController PATCH /me', () => {
     }
     expect((caught as { getStatus?: () => number }).getStatus?.()).toBe(502);
     const body = (caught as { getResponse: () => unknown }).getResponse();
-    expect(body).toMatchObject({ error: { code: 'internal' } });
+    expect(body).toMatchObject({ error: { code: 'internal', details: {} } });
   });
 
   it('rethrows unknown service errors', async () => {

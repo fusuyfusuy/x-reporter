@@ -56,6 +56,25 @@ export interface SessionGuardConfig {
 export const SESSION_GUARD_CONFIG = 'SessionGuardConfig';
 
 /**
+ * Build the standard `{ error: { code, message, details } }` envelope
+ * documented in `docs/api.md#errors`. Defined inline (rather than
+ * imported from a future shared module) so the guard has zero
+ * cross-module deps; #11 will hoist this to a shared helper once
+ * `/digests` becomes the second emitter of structured 401s.
+ */
+function unauthorizedBody(): {
+  error: { code: string; message: string; details: Record<string, never> };
+} {
+  return {
+    error: {
+      code: 'unauthorized',
+      message: 'unauthorized',
+      details: {},
+    },
+  };
+}
+
+/**
  * Minimal structural type for the express-style request the guard
  * actually touches. Declared here (rather than imported from `express`)
  * for the same reason `AuthController` does it: avoid pulling
@@ -80,7 +99,7 @@ export class SessionGuard implements CanActivate {
     const cookies = parseCookies(cookieHeader);
     const raw = cookies[SESSION_COOKIE_NAME];
     if (typeof raw !== 'string' || raw.length === 0) {
-      throw new UnauthorizedException();
+      throw new UnauthorizedException(unauthorizedBody());
     }
     const payload = verifyCookieValue<SessionCookiePayload>(
       raw,
@@ -91,13 +110,13 @@ export class SessionGuard implements CanActivate {
       // (missing dot, bad base64, JSON parse error, signature
       // mismatch). All of those collapse to "the caller does not have
       // a valid session" → 401.
-      throw new UnauthorizedException();
+      throw new UnauthorizedException(unauthorizedBody());
     }
     if (typeof payload.userId !== 'string' || payload.userId.length === 0) {
       // Correctly signed by *us* but the payload shape is wrong. Treat
       // the same as a tampered cookie — never attach an empty / non-
       // string id to the request.
-      throw new UnauthorizedException();
+      throw new UnauthorizedException(unauthorizedBody());
     }
     req.user = { id: payload.userId };
     return true;

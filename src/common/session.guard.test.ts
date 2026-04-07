@@ -64,6 +64,29 @@ function buildCookieHeader(name: string, value: string): string {
   return `${name}=${encodeURIComponent(value)}`;
 }
 
+/**
+ * Helper: invoke the guard, expect it to throw `UnauthorizedException`,
+ * and assert that the thrown exception carries the documented
+ * `{ error: { code: 'unauthorized', message, details } }` envelope. All
+ * 401 paths share this shape so clients see a single response schema
+ * regardless of which failure path was hit.
+ */
+function expectUnauthorizedEnvelope(fn: () => unknown): void {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(UnauthorizedException);
+  const status = (caught as { getStatus?: () => number }).getStatus?.();
+  expect(status).toBe(401);
+  const body = (caught as { getResponse: () => unknown }).getResponse();
+  expect(body).toMatchObject({
+    error: { code: 'unauthorized', message: 'unauthorized', details: {} },
+  });
+}
+
 describe('SessionGuard', () => {
   describe('happy path', () => {
     it('attaches req.user.id and returns true for a valid signed cookie', () => {
@@ -91,10 +114,10 @@ describe('SessionGuard', () => {
   });
 
   describe('401 paths', () => {
-    it('throws Unauthorized when there is no Cookie header at all', () => {
+    it('throws Unauthorized with the documented error envelope when there is no Cookie header at all', () => {
       const guard = makeGuard();
       const req: FakeReq = { headers: {} };
-      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+      expectUnauthorizedEnvelope(() => guard.canActivate(makeContext(req)));
       expect(req.user).toBeUndefined();
     });
 
@@ -104,7 +127,7 @@ describe('SessionGuard', () => {
       expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
     });
 
-    it('throws Unauthorized when the signature does not verify (tampered cookie)', () => {
+    it('throws Unauthorized with the documented envelope when the signature does not verify (tampered cookie)', () => {
       const guard = makeGuard();
       const value = mintSessionCookieValue('u_abc');
       // Flip a character in the signature half (after the dot) so the
@@ -117,7 +140,7 @@ describe('SessionGuard', () => {
           cookie: buildCookieHeader(SESSION_COOKIE_NAME, tampered),
         },
       };
-      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+      expectUnauthorizedEnvelope(() => guard.canActivate(makeContext(req)));
     });
 
     it('throws Unauthorized when the value is signed with a different secret', () => {
@@ -134,16 +157,19 @@ describe('SessionGuard', () => {
       expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
     });
 
-    it('throws Unauthorized when the payload is missing userId', () => {
+    it('throws Unauthorized with the documented envelope when the payload is missing userId', () => {
       // A correctly-signed payload that lacks the `userId` field — the
       // guard's payload validation must reject it instead of attaching
-      // `req.user.id = undefined`.
+      // `req.user.id = undefined`. We assert the envelope here so the
+      // malformed-payload branch is covered alongside the
+      // missing-cookie and bad-signature branches above; together
+      // those three cover every code path that throws 401.
       const guard = makeGuard();
       const value = signCookieValue({ issuedAt: Date.now() }, SECRET);
       const req: FakeReq = {
         headers: { cookie: buildCookieHeader(SESSION_COOKIE_NAME, value) },
       };
-      expect(() => guard.canActivate(makeContext(req))).toThrow(UnauthorizedException);
+      expectUnauthorizedEnvelope(() => guard.canActivate(makeContext(req)));
     });
 
     it('throws Unauthorized when userId is the wrong type (number)', () => {

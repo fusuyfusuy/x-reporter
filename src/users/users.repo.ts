@@ -277,10 +277,14 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
   if (typeof createdAt !== 'string') {
     throw new Error(`users row ${doc.$id} is missing createdAt`);
   }
-  // Cadence fields are optional in the schema (data-model.md). If
-  // present they must be numbers; anything else is treated as a
-  // corrupt row and aborts loudly so a hand-edited document can't
-  // smuggle a string into the controller's response.
+  // Cadence fields are optional in the schema (data-model.md).
+  // `undefined` and `null` are both treated as "unset" — Appwrite
+  // returns `null` for attributes that were never written, and we
+  // want the controller to fall through to the documented defaults
+  // (60 / 1440) in that case rather than 500. Anything else (string,
+  // float, boolean, etc.) is treated as a corrupt row and aborts
+  // loudly so a hand-edited document can't smuggle a non-integer
+  // into the controller's response.
   const pollIntervalMin = optionalIntegerField(doc, 'pollIntervalMin');
   const digestIntervalMin = optionalIntegerField(doc, 'digestIntervalMin');
   return {

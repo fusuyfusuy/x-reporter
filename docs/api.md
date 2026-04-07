@@ -27,6 +27,7 @@ documented in [data-model.md](./data-model.md#users) — clients always
 see numbers, never `null`.
 
 ### `GET /me`
+
 **Auth:** required.
 
 ```json
@@ -45,6 +46,7 @@ see numbers, never `null`.
 (e.g. account deleted between sign-in and request).
 
 ### `PATCH /me`
+
 **Auth:** required.
 
 ```json

@@ -7,6 +7,7 @@ import {
   NotFoundException,
   Patch,
   Req,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { z } from 'zod';
@@ -88,20 +89,38 @@ function validationFailedBody(details: unknown): { error: { code: string; messag
   };
 }
 
-function notFoundBody(message: string): { error: { code: string; message: string } } {
+function notFoundBody(message: string): {
+  error: { code: string; message: string; details: Record<string, never> };
+} {
   return {
     error: {
       code: 'not_found',
       message,
+      details: {},
     },
   };
 }
 
-function internalBody(message: string): { error: { code: string; message: string } } {
+function internalBody(message: string): {
+  error: { code: string; message: string; details: Record<string, never> };
+} {
   return {
     error: {
       code: 'internal',
       message,
+      details: {},
+    },
+  };
+}
+
+function unauthorizedBody(message: string): {
+  error: { code: string; message: string; details: Record<string, never> };
+} {
+  return {
+    error: {
+      code: 'unauthorized',
+      message,
+      details: {},
     },
   };
 }
@@ -171,12 +190,15 @@ export class UsersController {
  * `canActivate` would have thrown 401 long before this controller
  * runs. The check here is belt-and-braces so a future refactor that
  * removes the guard from one of the routes can't silently produce a
- * `userId = undefined` request that hits the repo.
+ * `userId = undefined` request that hits the repo. We surface this as
+ * `401 unauthorized` (matching the guard's failure path) rather than
+ * `404`, since the underlying problem is "no authenticated user", not
+ * "the requested resource is missing".
  */
 function requireUserId(req: RequestWithUser): string {
   const id = req.user?.id;
   if (typeof id !== 'string' || id.length === 0) {
-    throw new NotFoundException(notFoundBody('no authenticated user'));
+    throw new UnauthorizedException(unauthorizedBody('no authenticated user'));
   }
   return id;
 }
