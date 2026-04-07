@@ -114,6 +114,13 @@ describe('AppModule (e2e-lite)', () => {
     process.env.APPWRITE_PROJECT_ID = 'test_project';
     process.env.APPWRITE_API_KEY = 'test_key';
     process.env.APPWRITE_DATABASE_ID = 'xreporter_test';
+    // Redis URL is required as of milestone #5. The e2e-lite test does NOT
+    // require a reachable Redis — `createRedisClient` uses `lazyConnect`
+    // so construction opens no TCP socket, and the test does not enqueue
+    // any jobs. A real connect attempt would only happen if a test hit
+    // `/health` (which pings Redis) — that test's assertion is written
+    // to allow the `down` branch too, so a missing Redis never flakes CI.
+    process.env.REDIS_URL = 'redis://localhost:6379';
     // X OAuth + crypto + session vars are required as of milestone #3. The
     // values don't have to be real — AppwriteService is stubbed and
     // AuthService never calls X in this lite e2e run.
@@ -144,11 +151,25 @@ describe('AppModule (e2e-lite)', () => {
     if (app) await app.close();
   });
 
-  it('GET /health responds 200 with status + appwrite subsystem', async () => {
+  it('GET /health responds 200 with status + appwrite + redis subsystems', async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({ status: 'ok', appwrite: { status: 'ok' } });
+    const body = (await res.json()) as {
+      status: string;
+      appwrite: { status: string };
+      redis: { status: string; error?: string };
+    };
+    expect(body.status).toBe('ok');
+    expect(body.appwrite).toEqual({ status: 'ok' });
+    // Redis is expected to be `ok` in the normal CI path (where a local
+    // redis is running) OR `down` with an error string on a dev box with
+    // no redis. Either way the controller MUST return 200 with a
+    // structurally correct discriminated union; that's the health-policy
+    // contract the e2e-lite test is locking in.
+    expect(['ok', 'down']).toContain(body.redis.status);
+    if (body.redis.status === 'down') {
+      expect(typeof body.redis.error).toBe('string');
+    }
   });
 
   it('GET /unknown returns 404', async () => {

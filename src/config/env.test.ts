@@ -17,6 +17,7 @@ const baseEnv = {
   APPWRITE_PROJECT_ID: 'proj_abc',
   APPWRITE_API_KEY: 'key_xyz',
   APPWRITE_DATABASE_ID: 'xreporter',
+  REDIS_URL: 'redis://localhost:6379',
   X_CLIENT_ID: 'x_client_id',
   X_CLIENT_SECRET: 'x_client_secret',
   X_REDIRECT_URI: 'http://localhost:3000/auth/x/callback',
@@ -96,9 +97,14 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...baseEnv, APPWRITE_ENDPOINT: 'not a url' })).toThrow();
   });
 
-  it('accepts optional Redis URL', () => {
-    const env = loadEnv({ ...baseEnv, REDIS_URL: 'redis://localhost:6379' });
+  it('returns the configured REDIS_URL when present', () => {
+    const env = loadEnv(baseEnv);
     expect(env.REDIS_URL).toBe('redis://localhost:6379');
+  });
+
+  it('throws when REDIS_URL is missing (required as of milestone #5)', () => {
+    const { REDIS_URL: _omit, ...rest } = baseEnv;
+    expect(() => loadEnv(rest)).toThrow(/REDIS_URL/);
   });
 
   it('rejects an invalid REDIS_URL', () => {
