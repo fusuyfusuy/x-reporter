@@ -52,8 +52,15 @@ const X_USER_INFO_ENDPOINT = 'https://api.twitter.com/2/users/me';
 
 /** State cookie lifetime — 10 minutes is plenty for a user to bounce through X. */
 const STATE_COOKIE_MAX_AGE_SEC = 600;
-/** Session cookie lifetime — 30 days (matches spec). */
-const SESSION_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 30;
+/**
+ * Session cookie lifetime — 30 days (matches spec). Exported so the
+ * server-side `SessionGuard` (in `src/common/`) can enforce the same
+ * lifetime when verifying inbound cookies. Without server-side
+ * validation a stolen cookie could outlive the browser's `Max-Age`
+ * window indefinitely; with one shared constant the signing and
+ * verifying sides can never drift.
+ */
+export const SESSION_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 30;
 
 @Module({})
 export class AuthModule {

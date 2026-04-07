@@ -20,12 +20,20 @@ session cookie.
 
 ## Me
 
+Both endpoints are gated by the `xr_session` cookie issued by
+`/auth/x/callback`. Missing, malformed, or tampered cookies produce
+`401`. The cadence fields default to `60` (poll) and `1440` (digest) as
+documented in [data-model.md](./data-model.md#users) — clients always
+see numbers, never `null`.
+
 ### `GET /me`
+
 **Auth:** required.
 
 ```json
 {
   "id": "u_abc",
+  "xUserId": "12345",
   "handle": "fusuyfusuy",
   "pollIntervalMin": 60,
   "digestIntervalMin": 1440,
@@ -34,18 +42,35 @@ session cookie.
 }
 ```
 
+`404` if the session cookie's user id no longer matches a stored row
+(e.g. account deleted between sign-in and request).
+
 ### `PATCH /me`
+
 **Auth:** required.
 
 ```json
 { "pollIntervalMin": 30, "digestIntervalMin": 720 }
 ```
 
-Both fields optional. Server validates `pollIntervalMin >= 5` and
-`digestIntervalMin >= 15`. On success, `ScheduleService.upsertJobsForUser`
-re-registers the user's repeatable jobs with the new intervals.
+Both fields optional, but at least one MUST be provided. Server
+validates with a strict zod schema: integers, `pollIntervalMin >= 5`,
+`digestIntervalMin >= 15`, no unknown keys. Validation failures produce
+`400` with the standard `validation_failed` error envelope. On success,
+`ScheduleService.upsertJobsForUser` re-registers the user's repeatable
+jobs with the new intervals.
 
-**Response:** `200` with the updated `/me` payload.
+**Response:** `200` with the updated `/me` payload (same shape as
+`GET /me`).
+
+**Failure modes:**
+- `400 validation_failed` — body fails the zod schema (missing both
+  fields, value below minimum, non-integer, unknown key).
+- `401 unauthorized` — session cookie missing, malformed, or tampered.
+- `404 not_found` — session cookie's user id no longer exists.
+- `502 internal` — repo write succeeded but the post-write
+  `ScheduleService.upsertJobsForUser` call failed. The cadence change
+  is committed; the next successful PATCH reconciles the schedule.
 
 ## Digests
 

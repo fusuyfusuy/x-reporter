@@ -28,6 +28,27 @@ export interface UserRecord {
   handle: string;
   status: UserStatus;
   createdAt: string;
+  /**
+   * Optional in the DB row (see `data-model.md` — both cadence fields
+   * are optional at the schema level so the documented defaults apply
+   * to never-patched users). The `/me` controller substitutes the
+   * documented defaults (60 / 1440) before responding so clients always
+   * see numbers, not `undefined`.
+   */
+  pollIntervalMin?: number;
+  digestIntervalMin?: number;
+}
+
+/**
+ * Patch payload for {@link UsersRepo.updateCadence}. Both fields are
+ * optional but at least one MUST be provided — the repo throws on an
+ * empty patch so a no-op write never reaches Appwrite. The HTTP layer
+ * (zod schema in `users.controller.ts`) is the primary gate; this
+ * check is belt-and-braces.
+ */
+export interface UpdateCadenceInput {
+  pollIntervalMin?: number;
+  digestIntervalMin?: number;
 }
 
 /**
@@ -149,6 +170,56 @@ export class UsersRepo {
   }
 
   /**
+   * Update one or both cadence fields. Returns the post-update record,
+   * or `null` if the row was deleted between the caller's pre-read and
+   * this update.
+   *
+   * Only the keys explicitly present in `patch` are forwarded to
+   * Appwrite — passing `undefined` for the unspecified field would
+   * clobber a previously stored value, silently flipping the user back
+   * to the documented default. The HTTP boundary (`UsersController`)
+   * already enforces the value constraints (`pollIntervalMin >= 5`,
+   * `digestIntervalMin >= 15`, integers, at least one field) via zod;
+   * the only check the repo itself performs is the empty-patch guard,
+   * so a misuse from another caller fails loud instead of issuing a
+   * pointless write.
+   *
+   * Returning `null` (rather than throwing the raw Appwrite 404)
+   * mirrors the convention `findById` and `findByXUserId` already use:
+   * "row gone" is a documented application state, not an exceptional
+   * condition. Lets `UsersService` map the concurrent-delete race
+   * (user deleted between session-cookie issue and PATCH) to the
+   * documented `404 not_found` instead of a 500.
+   */
+  async updateCadence(
+    userId: string,
+    patch: UpdateCadenceInput,
+  ): Promise<UserRecord | null> {
+    const data: Record<string, unknown> = {};
+    if (patch.pollIntervalMin !== undefined) {
+      data.pollIntervalMin = patch.pollIntervalMin;
+    }
+    if (patch.digestIntervalMin !== undefined) {
+      data.digestIntervalMin = patch.digestIntervalMin;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new Error('updateCadence called with empty patch');
+    }
+    try {
+      const updated = await this.db.updateDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId: userId,
+        data,
+      });
+      return toUserRecord(updated);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+  }
+
+  /**
    * Update only the `status` field for the given user. Used by
    * `AuthService.getValidAccessToken` when refresh fails so the next
    * scheduled poll knows to skip the user until they re-auth.
@@ -220,11 +291,55 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
   if (typeof createdAt !== 'string') {
     throw new Error(`users row ${doc.$id} is missing createdAt`);
   }
+  // Cadence fields are optional in the schema (data-model.md).
+  // `undefined` and `null` are both treated as "unset" — Appwrite
+  // returns `null` for attributes that were never written, and we
+  // want the controller to fall through to the documented defaults
+  // (60 / 1440) in that case rather than 500. Anything else (string,
+  // float, boolean, etc.) is treated as a corrupt row and aborts
+  // loudly so a hand-edited document can't smuggle a non-integer
+  // into the controller's response.
+  const pollIntervalMin = optionalIntegerField(doc, 'pollIntervalMin');
+  const digestIntervalMin = optionalIntegerField(doc, 'digestIntervalMin');
   return {
     id: doc.$id,
     xUserId,
     handle,
     status,
     createdAt,
+    ...(pollIntervalMin !== undefined ? { pollIntervalMin } : {}),
+    ...(digestIntervalMin !== undefined ? { digestIntervalMin } : {}),
   };
+}
+
+/**
+ * Minimum allowed values for the cadence fields, mirrored from
+ * `data-model.md` and the zod schema in `users.controller.ts`. Stored
+ * here so a hand-edited (or otherwise corrupt) row carrying e.g. a
+ * `pollIntervalMin` of `0` can't smuggle past the read path and end
+ * up in `GET /me` — clients are promised values that satisfy these
+ * constraints, regardless of how the row was written. Keys not in
+ * this map are not range-checked.
+ */
+const CADENCE_MINIMUMS: Record<string, number> = {
+  pollIntervalMin: 5,
+  digestIntervalMin: 15,
+};
+
+function optionalIntegerField(
+  doc: Record<string, unknown> & { $id: string },
+  key: string,
+): number | undefined {
+  const value = doc[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`users row ${doc.$id} has non-integer ${key}: ${String(value)}`);
+  }
+  const min = CADENCE_MINIMUMS[key];
+  if (min !== undefined && value < min) {
+    throw new Error(
+      `users row ${doc.$id} has out-of-range ${key}: ${String(value)} (min ${min})`,
+    );
+  }
+  return value;
 }
