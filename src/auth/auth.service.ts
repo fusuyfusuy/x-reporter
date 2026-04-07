@@ -176,8 +176,21 @@ export class AuthService {
    * signed session cookie value.
    */
   async handleCallback(input: HandleCallbackInput): Promise<HandleCallbackResult> {
+    // Defense in depth: the controller already validates `code` and
+    // `state` against the query string before we get here, but a future
+    // caller (BG job, integration test, alternate transport) could call
+    // the service directly. A blank `code` would otherwise be forwarded
+    // to `xClient.exchangeCode()` and surface as an upstream-failure
+    // (502) instead of the typed validation-failure path used for every
+    // other malformed callback.
     if (!input.stateCookieValue) {
       throw new InvalidAuthCallbackError('missing state cookie');
+    }
+    if (!input.code) {
+      throw new InvalidAuthCallbackError('missing code');
+    }
+    if (!input.state) {
+      throw new InvalidAuthCallbackError('missing state');
     }
     const cookie = verifyCookieValue<StateCookiePayload>(
       input.stateCookieValue,
@@ -336,14 +349,32 @@ export class AuthService {
     }
     // Persist the refreshed pair (encrypted) and return the new access
     // token.
+    //
+    // CRITICAL: X has already accepted the refresh by this point and (in
+    // the rotating-token path) invalidated the previous refresh token. If
+    // the local upsert now fails, we are stranded: the next poll would
+    // load the *old* row, send the now-invalid old refresh token to X,
+    // and get back `invalid_grant`. Worse, the user would still be
+    // marked `active`, so scheduled callers would keep retrying a
+    // permanently broken account. Convert the persistence failure into
+    // an explicit `auth_expired` transition so re-auth is the only path
+    // forward, instead of leaking a raw repo error through workers.
     const newExpiresAtIso = new Date(Date.now() + refreshed.expiresIn * 1000).toISOString();
-    await this.tokens.upsertForUser({
-      userId,
-      accessToken: encrypt(refreshed.accessToken, this.config.encryptionKey),
-      refreshToken: encrypt(refreshed.refreshToken, this.config.encryptionKey),
-      expiresAt: newExpiresAtIso,
-      scope: refreshed.scope,
-    });
+    try {
+      await this.tokens.upsertForUser({
+        userId,
+        accessToken: encrypt(refreshed.accessToken, this.config.encryptionKey),
+        refreshToken: encrypt(refreshed.refreshToken, this.config.encryptionKey),
+        expiresAt: newExpiresAtIso,
+        scope: refreshed.scope,
+      });
+    } catch (err) {
+      await this.failAuth(userId);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new AuthExpiredError(
+        `refreshed tokens could not be persisted for user ${userId}: ${message}`,
+      );
+    }
     return refreshed.accessToken;
   }
 

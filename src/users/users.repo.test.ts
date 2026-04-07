@@ -24,9 +24,18 @@ class FakeDatabases {
     collectionId: string;
     queries?: string[];
   }): Promise<{ total: number; documents: Array<Record<string, unknown> & { $id: string }> }> {
-    const filters = (params.queries ?? []).map(parseEqualQuery).filter(Boolean) as Array<
-      [string, string]
-    >;
+    // Fail closed on unknown query shapes. The previous version dropped
+    // unparseable queries silently, which let an earlier regex regression
+    // turn the fake into a match-all helper without any test noticing.
+    // Throwing here makes any future Appwrite query-shape drift loud
+    // instead of silently degrading filtering.
+    const filters: Array<[string, string]> = (params.queries ?? []).map((q) => {
+      const parsed = parseEqualQuery(q);
+      if (!parsed) {
+        throw new Error(`unsupported fake Appwrite query: ${q}`);
+      }
+      return parsed;
+    });
     const all = Array.from(this.docs.values());
     const matched = all.filter((d) =>
       filters.every(([field, value]) => String(d[field]) === value),

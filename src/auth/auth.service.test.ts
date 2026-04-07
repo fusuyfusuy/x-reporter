@@ -148,9 +148,16 @@ class FakeUsersRepo {
 class FakeTokensRepo {
   byUserId = new Map<string, TokenRecord>();
   upsertCalls = 0;
+  /**
+   * Optional hook used by the persistence-failure regression test.
+   * Throws from `upsertForUser` *before* the in-memory write so the
+   * service sees a clean failure with no stored side effect.
+   */
+  upsertImpl: ((input: TokenRecord) => Promise<TokenRecord>) | null = null;
 
   async upsertForUser(input: TokenRecord): Promise<TokenRecord> {
     this.upsertCalls++;
+    if (this.upsertImpl) return this.upsertImpl(input);
     this.byUserId.set(input.userId, { ...input });
     return { ...input };
   }
@@ -259,6 +266,28 @@ describe('AuthService.handleCallback', () => {
         stateCookieValue,
       }),
     ).rejects.toThrow(/state mismatch|invalid state/i);
+  });
+
+  it('rejects with InvalidAuthCallbackError when code is missing (defense in depth)', async () => {
+    // The controller already rejects empty `code` at the HTTP boundary,
+    // but a future caller (BG job, integration test, alternate
+    // transport) could invoke the service directly. A blank code must
+    // surface as a typed validation failure (→ 400) instead of being
+    // forwarded to xClient.exchangeCode and bubbling up as an upstream
+    // dependency error (→ 502).
+    const { service } = makeDeps({});
+    const { stateCookieValue, state } = await withFreshSignedState(service);
+    await expect(
+      service.handleCallback({ code: '', state, stateCookieValue }),
+    ).rejects.toThrow(/missing code/);
+  });
+
+  it('rejects with InvalidAuthCallbackError when state is missing (defense in depth)', async () => {
+    const { service } = makeDeps({});
+    const { stateCookieValue } = await withFreshSignedState(service);
+    await expect(
+      service.handleCallback({ code: 'c', state: '', stateCookieValue }),
+    ).rejects.toThrow(/missing state/);
   });
 
   it('rejects when the state cookie is missing or empty', async () => {
@@ -464,6 +493,43 @@ describe('AuthService.getValidAccessToken', () => {
     // No auth_expired transition was attempted.
     expect(users.setStatusCalls).toEqual([]);
   });
+
+  it('marks the user auth_expired when persisting refreshed tokens fails after X already rotated', async () => {
+    // CRITICAL: by the time tokens.upsertForUser runs, X has already
+    // accepted the refresh and (in the rotating-token path) invalidated
+    // the previous refresh token. If the local write now fails, we are
+    // stranded — the next poll would replay the stale refresh token
+    // and get invalid_grant. The service must turn that into an
+    // explicit auth_expired transition rather than leaking a raw repo
+    // error through workers.
+    const key = loadEncryptionKey(KEY_B64);
+    const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { service, users, tokens, xClient } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('expired-access', key),
+      refreshToken: encrypt('still-good-refresh', key),
+      expiresAt: past,
+      scope: 'tweet.read',
+    });
+    xClient.refreshImpl = async () => ({
+      accessToken: 'rotated-access',
+      refreshToken: 'rotated-refresh',
+      expiresIn: 7200,
+      scope: 'tweet.read',
+    });
+    // Now make the *post-refresh* upsert fail. The seed write above
+    // already happened, so install the failure hook only afterwards.
+    tokens.upsertImpl = async () => {
+      throw new Error('appwrite write failed: 503 service unavailable');
+    };
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    // The user was transitioned to auth_expired so scheduled callers stop.
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
+  });
+
 
   it('marks the user auth_expired and throws AuthExpiredError when no tokens row exists', async () => {
     // A missing tokens row means partial callback persistence, manual
