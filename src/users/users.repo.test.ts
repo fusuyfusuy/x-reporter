@@ -98,14 +98,32 @@ class FakeDatabases {
 }
 
 /**
- * Parse an Appwrite Query string of the form `equal("field", ["value"])`
- * back into a `[field, value]` tuple. Returns `null` for anything else.
- * The repo only emits equality queries, so this is sufficient.
+ * Parse an Appwrite v23 Query string back into a `[field, value]` tuple.
+ *
+ * `node-appwrite` >= 14 emits queries as JSON of the shape
+ * `{"method":"equal","attribute":"xUserId","values":["12345"]}` (see
+ * sdk-for-node/src/query.ts). The earlier regex-based parser expected
+ * the long-gone `equal("xUserId", ["12345"])` syntax and silently
+ * returned `null` for every real query, which made the fake's
+ * `listDocuments` return *every* row instead of filtering — tests only
+ * passed because each test stored a single document. Switching to
+ * `JSON.parse` makes the filter actually work and locks the contract
+ * the production repo relies on.
  */
 function parseEqualQuery(q: string): [string, string] | null {
-  const m = q.match(/^equal\("([^"]+)",\s*\[?"?([^"\]]+)"?\]?\)$/);
-  if (!m) return null;
-  return [m[1]!, m[2]!];
+  try {
+    const parsed = JSON.parse(q) as {
+      method?: unknown;
+      attribute?: unknown;
+      values?: unknown;
+    };
+    if (parsed.method !== 'equal') return null;
+    if (typeof parsed.attribute !== 'string') return null;
+    if (!Array.isArray(parsed.values) || parsed.values.length === 0) return null;
+    return [parsed.attribute, String(parsed.values[0])];
+  } catch {
+    return null;
+  }
 }
 
 function makeRepo(): { repo: UsersRepo; db: FakeDatabases } {
@@ -237,6 +255,23 @@ describe('UsersRepo.findByXUserId', () => {
     const found = await repo.findByXUserId('12345');
     expect(found).not.toBeNull();
     expect((found as UserRecord).id).toBe(created.id);
+  });
+
+  it('only returns the matching user when multiple users exist (filter actually filters)', async () => {
+    // Regression: an earlier version of the test fake's parseEqualQuery
+    // expected the long-gone `equal("field", ["value"])` syntax instead
+    // of the JSON shape node-appwrite v23 actually emits, which made
+    // listDocuments silently return *every* document. With only one row
+    // per test the bug was invisible. This test seeds three users so
+    // any future regression in the query parser is loud.
+    const { repo } = makeRepo();
+    await repo.upsertByXUserId({ xUserId: '111', handle: 'alice' });
+    const target = await repo.upsertByXUserId({ xUserId: '222', handle: 'bob' });
+    await repo.upsertByXUserId({ xUserId: '333', handle: 'carol' });
+    const found = await repo.findByXUserId('222');
+    expect(found).not.toBeNull();
+    expect((found as UserRecord).id).toBe(target.id);
+    expect((found as UserRecord).handle).toBe('bob');
   });
 });
 

@@ -181,7 +181,9 @@ export class HttpXOAuthClient implements XOAuthClient {
       async (res) => {
         if (!res.ok) {
           const text = await res.text().catch(() => '');
-          throw new Error(`x users/me endpoint failed: ${res.status} ${text}`);
+          throw new Error(
+            `x users/me endpoint failed: ${res.status} ${truncateForError(text)}`,
+          );
         }
         const json: unknown = await res.json();
         const parsed = XUserInfoResponseSchema.parse(json);
@@ -221,9 +223,14 @@ export class HttpXOAuthClient implements XOAuthClient {
         if (!res.ok) {
           // Read the body for diagnostics, but never log token contents —
           // the body of a token endpoint failure is an error envelope, not
-          // a real token, so it's safe to surface in the message.
+          // a real token, so it's safe to surface in the message. Still
+          // truncate it for defense-in-depth: an unexpected upstream
+          // response could carry request ids or partial credential-shaped
+          // data, and an unbounded body bloats logs.
           const text = await res.text().catch(() => '');
-          throw new Error(`x oauth token endpoint failed: ${res.status} ${text}`);
+          throw new Error(
+            `x oauth token endpoint failed: ${res.status} ${truncateForError(text)}`,
+          );
         }
         const json: unknown = await res.json();
         if (fallbackRefreshToken !== undefined) {
@@ -285,4 +292,17 @@ export class HttpXOAuthClient implements XOAuthClient {
 function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   return (err as { name?: string }).name === 'AbortError';
+}
+
+/** Maximum number of body characters to include in a thrown error message. */
+const ERROR_BODY_MAX_CHARS = 200;
+
+/**
+ * Clamp an upstream response body for inclusion in an `Error` message.
+ * Token-endpoint failures are error envelopes (not real tokens), but an
+ * unbounded body can still leak request ids or bloat logs, so we cap it.
+ */
+function truncateForError(body: string): string {
+  if (body.length <= ERROR_BODY_MAX_CHARS) return body;
+  return `${body.slice(0, ERROR_BODY_MAX_CHARS)}…[truncated]`;
 }

@@ -14,21 +14,6 @@ const VALID_KEY_B64 = Buffer.alloc(32, 11).toString('base64');
 class FakeDatabases {
   readonly docs = new Map<string, Record<string, unknown> & { $id: string }>();
 
-  async listDocuments(params: {
-    databaseId: string;
-    collectionId: string;
-    queries?: string[];
-  }): Promise<{ total: number; documents: Array<Record<string, unknown> & { $id: string }> }> {
-    const filters = (params.queries ?? []).map(parseEqualQuery).filter(Boolean) as Array<
-      [string, string]
-    >;
-    const all = Array.from(this.docs.values());
-    const matched = all.filter((d) =>
-      filters.every(([field, value]) => String(d[field]) === value),
-    );
-    return { total: matched.length, documents: matched };
-  }
-
   async createDocument(params: {
     databaseId: string;
     collectionId: string;
@@ -75,12 +60,6 @@ class FakeDatabases {
     this.docs.set(params.documentId, updated);
     return updated;
   }
-}
-
-function parseEqualQuery(q: string): [string, string] | null {
-  const m = q.match(/^equal\("([^"]+)",\s*\[?"?([^"\]]+)"?\]?\)$/);
-  if (!m) return null;
-  return [m[1]!, m[2]!];
 }
 
 function makeRepo(): { repo: TokensRepo; db: FakeDatabases } {

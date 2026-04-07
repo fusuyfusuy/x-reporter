@@ -103,7 +103,13 @@ class FakeUsersRepo {
     this.upsertCalls++;
     const existing = this.byXUserId.get(input.xUserId);
     if (existing) {
-      const updated: UserRecord = { ...existing, handle: input.handle, status: 'active' };
+      // Mirror production semantics from `UsersRepo.upsertByXUserId`:
+      // only revive an `auth_expired` row back to `active`. A `paused`
+      // row stays paused, otherwise this fake would silently let
+      // AuthService bugs that wrongly unpause users sneak through.
+      const newStatus: UserStatus =
+        existing.status === 'auth_expired' ? 'active' : existing.status;
+      const updated: UserRecord = { ...existing, handle: input.handle, status: newStatus };
       this.byXUserId.set(input.xUserId, updated);
       this.byId.set(updated.id, updated);
       return updated;

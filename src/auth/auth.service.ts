@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { decrypt, encrypt } from '../common/crypto';
 import { TokensRepo } from '../tokens/tokens.repo';
 import { UsersRepo } from '../users/users.repo';
@@ -134,6 +134,8 @@ const MAX_REFRESH_RACE_RETRIES = 1;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly config: AuthServiceConfig,
     private readonly xClient: XOAuthClient,
@@ -359,8 +361,18 @@ export class AuthService {
   private async failAuth(userId: string): Promise<void> {
     try {
       await this.users.setStatus(userId, 'auth_expired');
-    } catch {
-      // intentionally ignored — caller still receives AuthExpiredError
+    } catch (err) {
+      // Intentionally do not rethrow — the caller still receives the
+      // typed `AuthExpiredError` and the request stops cleanly. But
+      // silently swallowing every failure would hide a persistent
+      // database connectivity issue (e.g., Appwrite outage), so log at
+      // `warn` for observability. The userId is non-sensitive; the err
+      // is from `users.setStatus` which never sees token plaintext, so
+      // there's nothing to redact here.
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `failed to set auth_expired for user ${userId}: ${message}`,
+      );
     }
   }
 }
