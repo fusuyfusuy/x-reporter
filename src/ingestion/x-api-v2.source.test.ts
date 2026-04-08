@@ -129,6 +129,9 @@ describe('XApiV2Source.fetchLikes — happy path', () => {
     expect(called.searchParams.get('tweet.fields')).toBe('entities,author_id,text');
     expect(called.searchParams.get('user.fields')).toBe('username');
     expect(called.searchParams.get('max_results')).toBe('100');
+    // Without `expansions=author_id`, X silently omits `includes.users`
+    // and `authorHandle` would always fall back to ''. Lock this in.
+    expect(called.searchParams.get('expansions')).toBe('author_id');
     // No cursor → no pagination_token param.
     expect(called.searchParams.has('pagination_token')).toBe(false);
 
@@ -435,5 +438,67 @@ describe('XApiV2Source — upstream failures', () => {
       const msg = err instanceof Error ? err.message : String(err);
       expect(msg).not.toContain('sensitive-token-value');
     }
+  });
+
+  it('rejects an empty `{}` response (must contain data or meta)', async () => {
+    // A literally empty object would otherwise silently map to
+    // `{ items: [] }` and mask schema drift as "no results". The
+    // refine on FetchPageResponseSchema is what catches this.
+    const { fetch: fakeImpl } = fakeFetch([{ status: 200, body: {} }]);
+    const source = new XApiV2Source(
+      baseConfig,
+      fakeAuthService({}),
+      fakeUsersRepo(activeUser),
+      fakeImpl,
+    );
+    await expect(source.fetchLikes('appwrite-user-1')).rejects.toThrow(/data and meta/);
+  });
+
+  it('redacts the bearer token if it appears in an error response body', async () => {
+    // Defense in depth: if X (or an intermediary like a buggy WAF)
+    // reflects the Authorization header in the response body, the
+    // adapter must scrub it before embedding the body in the thrown
+    // Error. Otherwise the token leaks into logs.
+    const leakedToken = 'super-secret-bearer';
+    const { fetch: fakeImpl } = fakeFetch([
+      {
+        status: 401,
+        body: { errors: [{ message: `invalid token: ${leakedToken}` }] },
+      },
+    ]);
+    const source = new XApiV2Source(
+      baseConfig,
+      fakeAuthService({ token: leakedToken }),
+      fakeUsersRepo(activeUser),
+      fakeImpl,
+    );
+    try {
+      await source.fetchLikes('appwrite-user-1');
+      throw new Error('expected fetchLikes to throw');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).toContain('401');
+      expect(msg).not.toContain(leakedToken);
+      expect(msg).toContain('[redacted]');
+    }
+  });
+
+  it('turns an aborted/timed-out fetch into a descriptive timeout error', async () => {
+    // Simulate the AbortController's abort path by throwing a synthetic
+    // AbortError from fetch. The adapter's `isAbortError` check turns
+    // this into a timeout-flavoured Error so the BullMQ processor in #7
+    // can distinguish it from a non-2xx response.
+    const abortingFetch = (async () => {
+      const err = new Error('aborted');
+      (err as { name: string }).name = 'AbortError';
+      throw err;
+    }) as unknown as typeof fetch;
+    const source = new XApiV2Source(
+      { baseUrl: 'https://api.twitter.com', fetchTimeoutMs: 50 },
+      fakeAuthService({}),
+      fakeUsersRepo(activeUser),
+      abortingFetch,
+    );
+    await expect(source.fetchLikes('appwrite-user-1')).rejects.toThrow(/timed out after 50ms/);
   });
 });

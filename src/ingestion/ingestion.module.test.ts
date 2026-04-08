@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Test } from '@nestjs/testing';
 import { AppwriteModule } from '../appwrite/appwrite.module';
 import { AppwriteService } from '../appwrite/appwrite.service';
+import { AuthModule } from '../auth/auth.module';
 import { IngestionModule, X_SOURCE } from './ingestion.module';
 import { XApiV2Source } from './x-api-v2.source';
 import type { XSource } from './x-source.port';
@@ -39,11 +40,50 @@ function makeStubAppwrite(): {
   };
 }
 
+/**
+ * Keys this test mutates on `process.env`. Snapshotting these and
+ * restoring them after each case keeps the suite order-independent —
+ * other tests that legitimately rely on a missing/invalid env key
+ * (e.g. config validation tests) cannot be silently masked by a stale
+ * value left behind here.
+ */
+const TOUCHED_ENV_KEYS = [
+  'NODE_ENV',
+  'PORT',
+  'APPWRITE_ENDPOINT',
+  'APPWRITE_PROJECT_ID',
+  'APPWRITE_API_KEY',
+  'APPWRITE_DATABASE_ID',
+  'X_CLIENT_ID',
+  'X_CLIENT_SECRET',
+  'X_REDIRECT_URI',
+  'X_SCOPES',
+  'TOKEN_ENC_KEY',
+  'SESSION_SECRET',
+] as const;
+
 describe('IngestionModule.forRoot', () => {
+  const envSnapshot = new Map<string, string | undefined>();
+
+  afterEach(() => {
+    for (const key of TOUCHED_ENV_KEYS) {
+      const original = envSnapshot.get(key);
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    }
+    envSnapshot.clear();
+  });
+
   it('resolves X_SOURCE to an XApiV2Source instance', async () => {
     // Match the test env populated by `app.module.test.ts`. `AuthModule`
     // pulls these in via `Env`, so they must be present on process.env
     // before `forRoot` runs or env validation fails loud.
+    for (const key of TOUCHED_ENV_KEYS) {
+      envSnapshot.set(key, process.env[key]);
+    }
     process.env.NODE_ENV = 'test';
     process.env.PORT = '3000';
     process.env.APPWRITE_ENDPOINT = 'https://appwrite.test/v1';
@@ -60,13 +100,18 @@ describe('IngestionModule.forRoot', () => {
     const { loadEnv } = await import('../config/env');
     const env = loadEnv();
 
-    // `AppwriteModule` is `@Global()` in production wiring, so importing
-    // it here makes `AppwriteService` visible to `UsersRepo` inside the
-    // `AuthModule` chain that `IngestionModule` imports. The override
-    // below replaces the real Appwrite client with a stub so no network
-    // call escapes.
+    // `IngestionModule.forRoot` no longer imports `AuthModule` (the
+    // production wiring relies on `AuthModule.forRoot(env)` being
+    // registered as `global: true` from `AppModule`), so we register
+    // `AuthModule` explicitly here as a sibling. Without it the
+    // `X_SOURCE` factory's `inject: [AuthService, UsersRepo]` would be
+    // unresolvable inside the test module scope.
     const moduleRef = await Test.createTestingModule({
-      imports: [AppwriteModule.forRoot(env), IngestionModule.forRoot(env)],
+      imports: [
+        AppwriteModule.forRoot(env),
+        AuthModule.forRoot(env),
+        IngestionModule.forRoot(env),
+      ],
     })
       .overrideProvider(AppwriteService)
       .useValue(makeStubAppwrite())

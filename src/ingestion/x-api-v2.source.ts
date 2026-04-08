@@ -109,7 +109,13 @@ const FetchPageResponseSchema = z
       .optional(),
     meta: z.object({ next_token: z.string().optional() }).passthrough().optional(),
   })
-  .passthrough();
+  .passthrough()
+  // A response that is literally `{}` is never legitimate from X — every
+  // real call returns at least `data` or `meta`. Failing fast here keeps
+  // schema drift from being silently swallowed as "empty page".
+  .refine((value) => value.data !== undefined || value.meta !== undefined, {
+    message: 'x api v2 response is missing both data and meta',
+  });
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -236,6 +242,11 @@ export class XApiV2Source implements XSource {
     cursor: string | undefined,
   ): string {
     const params = new URLSearchParams({
+      // `expansions=author_id` is what actually causes X to return the
+      // related user objects under `includes.users`. Without it, the
+      // `user.fields` request is silently ignored, `includes.users` is
+      // omitted, and `authorHandle` resolves to '' for every tweet.
+      expansions: 'author_id',
       'tweet.fields': TWEET_FIELDS,
       'user.fields': USER_FIELDS,
       max_results: MAX_RESULTS,
@@ -277,10 +288,14 @@ export class XApiV2Source implements XSource {
         // Read the body for diagnostics. A truncated echo of the error
         // envelope makes `502 Bad Gateway` vs `429 Too Many Requests` vs
         // `401 Unauthorized` trivially distinguishable in logs without
-        // any per-status ladder here.
-        const text = await res.text().catch(() => '');
+        // any per-status ladder here. Defense in depth: if X (or an
+        // intermediary) reflects the bearer back in the body, scrub it
+        // before truncating so it can't leak through the thrown Error.
+        const rawText = await res.text().catch(() => '');
+        const safeText =
+          accessToken.length > 0 ? rawText.replaceAll(accessToken, '[redacted]') : rawText;
         throw new Error(
-          `x api v2 ${new URL(url).pathname} failed: ${res.status} ${truncateForError(text)}`,
+          `x api v2 ${new URL(url).pathname} failed: ${res.status} ${truncateForError(safeText)}`,
         );
       }
       return (await res.json()) as unknown;
