@@ -111,6 +111,23 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...baseEnv, REDIS_URL: 'not a url' })).toThrow();
   });
 
+  it('rejects a non-redis scheme on REDIS_URL', () => {
+    // A misconfigured value (e.g. an http URL pasted in by mistake) must
+    // fail at boot rather than reach BullMQ as a confusing connection
+    // error later.
+    expect(() =>
+      loadEnv({ ...baseEnv, REDIS_URL: 'http://localhost:6379' }),
+    ).toThrow(/redis:\/\/ or rediss:\/\//);
+  });
+
+  it('accepts a rediss:// (TLS) REDIS_URL', () => {
+    const env = loadEnv({
+      ...baseEnv,
+      REDIS_URL: 'rediss://user:pass@redis.example.com:6380',
+    });
+    expect(env.REDIS_URL).toBe('rediss://user:pass@redis.example.com:6380');
+  });
+
   it('coerces worker concurrency env vars to numbers when set', () => {
     const env = loadEnv({
       ...baseEnv,

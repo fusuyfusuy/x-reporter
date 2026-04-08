@@ -22,8 +22,8 @@ import { z } from 'zod';
  *   - SESSION_SECRET (min 32 chars)
  *
  * Required as of milestone #5 (BullMQ infra + ScheduleService):
- *   - REDIS_URL (must be a valid URL; `QueueModule` and `ScheduleService`
- *     fail hard at boot otherwise)
+ *   - REDIS_URL (must be a valid `redis://` or `rediss://` URL;
+ *     `QueueModule` and `ScheduleService` fail hard at boot otherwise)
  *
  * APPWRITE_DATABASE_ID has a default so a fresh checkout boots without
  * having to set it.
@@ -64,7 +64,23 @@ const EnvSchema = z.object({
   APPWRITE_DATABASE_ID: z.string().min(1).default('xreporter'),
 
   // ----- Redis / BullMQ (#5) -----
-  REDIS_URL: z.string().url(),
+  // Restricted to `redis://` and `rediss://` schemes so a misconfigured
+  // value (e.g. an `http://` URL accidentally pasted in) fails at boot
+  // rather than later as a confusing BullMQ / health-ping error.
+  REDIS_URL: z
+    .string()
+    .url()
+    .refine(
+      (value) => {
+        try {
+          const protocol = new URL(value).protocol;
+          return protocol === 'redis:' || protocol === 'rediss:';
+        } catch {
+          return false;
+        }
+      },
+      { message: 'REDIS_URL must use the redis:// or rediss:// scheme' },
+    ),
 
   // ----- X OAuth2 (#3) -----
   X_CLIENT_ID: z.string().min(1),

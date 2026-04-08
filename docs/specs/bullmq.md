@@ -78,17 +78,21 @@ Scope:
    c. Resolves the cadence using
       `user.pollIntervalMin ?? DEFAULT_POLL_INTERVAL_MIN` and
       `user.digestIntervalMin ?? DEFAULT_DIGEST_INTERVAL_MIN`
-      (imported from `UsersService`, not hardcoded).
+      (imported from `src/users/cadence.constants.ts`, not hardcoded).
    d. For each of the two repeatable jobs
       (`user:{id}:poll` on `poll-x`, `user:{id}:digest` on `build-digest`),
-      removes any existing scheduler for that jobId (idempotent) and
-      adds a fresh one at the computed interval. The "remove then add"
-      contract is what makes cadence changes propagate: after an
-      `upsertJobsForUser` call, there is exactly one repeatable entry
-      per jobId and it reflects the user's current interval.
+      calls BullMQ 5.x's `queue.upsertJobScheduler(id, repeatOpts, template)`
+      with the stable scheduler id and the computed interval.
+      `upsertJobScheduler` is an atomic create-or-update: it creates a
+      new scheduler when the id is unknown and updates the existing
+      one in place when the id already exists. This is what makes
+      cadence changes propagate without ever leaving two schedulers
+      behind — after an `upsertJobsForUser` call there is exactly one
+      repeatable entry per jobId, reflecting the user's current
+      interval.
    e. The same method is safe to call twice in a row — the second
-      call removes the entry added by the first and re-adds it with
-      the same interval, a no-op from the user's perspective.
+      call upserts the same scheduler definition again, which is a
+      no-op from the user's perspective.
 
    `removeJobsForUser(userId)`:
    a. Removes both repeatables (`user:{id}:poll`, `user:{id}:digest`)
@@ -149,8 +153,10 @@ Scope:
   only the user id.
 - **Cadence defaults**: import
   `DEFAULT_POLL_INTERVAL_MIN` / `DEFAULT_DIGEST_INTERVAL_MIN` from
-  `src/users/users.service.ts`. Do NOT hardcode `60 / 1440` inside
-  `ScheduleService`.
+  `src/users/cadence.constants.ts` — that file is the canonical
+  source of truth. `src/users/users.service.ts` re-exports the same
+  constants for backward compatibility with existing import sites,
+  but `ScheduleService` MUST NOT hardcode `60 / 1440`.
 - **Idempotency contract**: calling `upsertJobsForUser` N times in a
   row for the same user MUST leave the queue in the same state as a
   single call. Calling `upsertJobsForUser` with a different cadence

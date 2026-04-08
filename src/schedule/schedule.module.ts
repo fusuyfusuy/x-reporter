@@ -20,13 +20,15 @@ import { ScheduleService } from './schedule.service';
  * registered once at the root in `AppModule.forRoot()`. Importing it
  * here is a no-op at the DI level — Nest dedupes global modules — but
  * the explicit import makes it obvious that `ScheduleService` depends
- * on the queue tokens and `UsersRepo` (the latter is exported from
- * `AuthModule.forRoot` and lifted to the container at boot).
+ * on the queue tokens (and on `UsersRepo`, resolved separately).
  *
- * `UsersRepo` is not re-registered here: it is provided by
- * `AuthModule.forRoot(env)` and exported from there so the whole
- * container can inject it. `ScheduleService` reaches into it via the
- * Nest DI container at resolve time.
+ * `UsersRepo` is not re-registered here: it is provided by the
+ * `@Global()` `UsersRepoModule` (registered at the root in
+ * `AppModule.forRoot()`), so `ScheduleService` resolves it from the
+ * global scope at construction time. The split between `UsersRepoModule`
+ * and `AuthModule` exists specifically to break the
+ * `AuthService` ↔ `ScheduleService` ↔ `UsersRepo` cycle that an
+ * `AuthModule`-owned `UsersRepo` would otherwise create.
  */
 @Global()
 @Module({

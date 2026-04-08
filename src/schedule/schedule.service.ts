@@ -38,9 +38,12 @@ import { UsersRepo } from '../users/users.repo';
  *
  * The interval falls back to the documented defaults
  * (`DEFAULT_POLL_INTERVAL_MIN` / `DEFAULT_DIGEST_INTERVAL_MIN` imported
- * from `UsersService`) when the user row has no cadence set. These
- * constants are imported, NEVER hardcoded, so any future change lives
- * in exactly one place.
+ * from `../users/cadence.constants`, the source of truth) when the
+ * user row has no cadence set. These constants are imported, NEVER
+ * hardcoded, and they live in their own module — outside
+ * `UsersService` — specifically to break the
+ * `UsersService` ↔ `ScheduleService` import cycle at module
+ * evaluation time.
  *
  * ## BullMQ 5.x job scheduler API
  *

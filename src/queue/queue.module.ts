@@ -1,7 +1,6 @@
 import {
   type DynamicModule,
   Global,
-  Injectable,
   Logger,
   Module,
   type OnModuleDestroy,
@@ -93,7 +92,6 @@ export interface QueueModuleOptions {
  * Nest has no hook to call into them — we register a dedicated
  * Injectable whose `onModuleDestroy` drains them in the right order.
  */
-@Injectable()
 class QueueModuleLifecycle implements OnModuleDestroy {
   private readonly logger = new Logger(QueueModuleLifecycle.name);
 
@@ -103,33 +101,19 @@ class QueueModuleLifecycle implements OnModuleDestroy {
   ) {}
 
   async onModuleDestroy(): Promise<void> {
-    // Cold-shutdown fast path: if the shared client never opened a TCP
-    // socket (which is the case under `lazyConnect: true` whenever no
-    // command was issued — typically in unit tests that resolve the
-    // module just to assert provider registration), then there is no
-    // BullMQ in-flight work to drain on the shared client. Calling
-    // `Queue.close()` in that state would force BullMQ to lazily
-    // connect *just so it can disconnect*. Skip the queue drain in
-    // that case; BullMQ's own internal duplicated clients are still
-    // closed via their queue references in the loop below.
-    //
-    // ioredis exposes the connection lifecycle as a `status` string:
-    //   - `wait`        — never connected (lazyConnect default)
-    //   - `connecting`  — TCP handshake in flight
-    //   - `connect`     — TCP open, command channel not yet ready
-    //   - `ready`       — accepting commands
-    //   - `closing` / `close` / `end` — terminated
-    //
-    // Only the `wait` state is safe to short-circuit: any state past
-    // `connecting` means the queues may have buffered Lua scripts
-    // we still want to drain.
-    const sharedClientNeverConnected = this.client.status === 'wait';
-
     // 1. Close all queues first. Queue.close() waits for pending
     //    BullMQ operations (script evaluations, in-flight `add`s)
     //    to finish, then releases the internal connection wrapper.
     //    Running this before the client quit prevents half-finished
     //    Lua scripts from being truncated mid-execution.
+    //
+    //    Note: under `lazyConnect: true`, calling `queue.close()`
+    //    against a queue whose shared connection never opened may
+    //    itself trigger a one-shot connect-then-fail inside BullMQ
+    //    (the close path issues a script eval which forces lazy
+    //    connect). The status check below runs *after* this loop on
+    //    purpose, so it sees the post-loop reality rather than the
+    //    pre-loop snapshot.
     for (const queue of this.queues) {
       try {
         await queue.close();
@@ -138,14 +122,28 @@ class QueueModuleLifecycle implements OnModuleDestroy {
         this.logger.warn(`failed to close queue ${queue.name}: ${message}`);
       }
     }
-    // 2. Quit the shared client. Skip if the client never connected
-    //    (cold-shutdown fast path described above) — quit() on a
-    //    `wait`-state client is a no-op that still emits a `close`
-    //    event, which is harmless but unnecessary. Swallow errors on
-    //    shutdown either way: if quit fails, the process is
-    //    terminating anyway, and throwing would mask any earlier
-    //    cleanup failures that we want Nest to surface first.
-    if (sharedClientNeverConnected) {
+
+    // 2. Quit the shared client only if it has (or had) a live socket
+    //    to close. ioredis exposes the connection lifecycle as a
+    //    `status` string:
+    //      - `wait`                       — never connected (lazyConnect)
+    //      - `connecting` / `connect`     — TCP open or in flight
+    //      - `ready`                      — accepting commands
+    //      - `close` / `end`              — already terminated
+    //
+    //    We skip `quit()` for both the never-connected and the
+    //    already-terminated states: calling `quit()` on either of
+    //    those leaks an unhandled "Connection is closed" rejection
+    //    from ioredis (the close handler races the quit promise),
+    //    which we have no useful action for during teardown.
+    //
+    //    Swallow errors on the live-quit path either way: if quit
+    //    fails, the process is terminating anyway, and throwing
+    //    would mask any earlier cleanup failures we want Nest to
+    //    surface first.
+    const status = this.client.status;
+    const needsQuit = status !== 'wait' && status !== 'end' && status !== 'close';
+    if (!needsQuit) {
       return;
     }
     try {
