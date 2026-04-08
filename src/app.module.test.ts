@@ -4,6 +4,8 @@ import { Test } from '@nestjs/testing';
 import { AppModule } from './app.module';
 import { SESSION_COOKIE_NAME } from './auth/auth.controller';
 import { signCookieValue } from './auth/cookies';
+import { REDIS_HEALTH, type RedisHealthPort } from './queue/queue.tokens';
+import { ScheduleService } from './schedule/schedule.service';
 
 const TEST_SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
 const TEST_USER_ID = 'u_e2e_test_abc';
@@ -114,6 +116,13 @@ describe('AppModule (e2e-lite)', () => {
     process.env.APPWRITE_PROJECT_ID = 'test_project';
     process.env.APPWRITE_API_KEY = 'test_key';
     process.env.APPWRITE_DATABASE_ID = 'xreporter_test';
+    // Redis URL is required as of milestone #5. The e2e-lite test does NOT
+    // require a reachable Redis — `createRedisClient` uses `lazyConnect`
+    // so construction opens no TCP socket, and the test does not enqueue
+    // any jobs. A real connect attempt would only happen if a test hit
+    // `/health` (which pings Redis) — that test's assertion is written
+    // to allow the `down` branch too, so a missing Redis never flakes CI.
+    process.env.REDIS_URL = 'redis://localhost:6379';
     // X OAuth + crypto + session vars are required as of milestone #3. The
     // values don't have to be real — AppwriteService is stubbed and
     // AuthService never calls X in this lite e2e run.
@@ -126,11 +135,44 @@ describe('AppModule (e2e-lite)', () => {
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 
+    // Stub the BullMQ-backed schedule + Redis ping so the test never
+    // needs a reachable Redis. The real `QueueModule.forRoot` still
+    // builds an ioredis client (lazyConnect, no socket opens at boot),
+    // but ScheduleService is the only path that would actually run a
+    // command, and the Redis health probe is the only path the
+    // controller uses — both are replaced here.
+    const fakeSchedule = {
+      async upsertJobsForUser(_userId: string) {
+        // no-op: a real BullMQ schedule write would require a live
+        // Redis. The acceptance criterion (PATCH → schedule sync) is
+        // covered by the unit-level UsersService.updateCadence test
+        // and ScheduleService unit tests; the e2e-lite test only
+        // needs the wiring to not explode.
+      },
+      async removeJobsForUser(_userId: string) {
+        // no-op
+      },
+    } as unknown as ScheduleService;
+
+    const fakeRedisHealth: RedisHealthPort = {
+      // The /health test below already accepts both `ok` and `down`,
+      // so returning a deterministic `ok` here is the simpler choice
+      // — it pins the body shape without coupling the test to whether
+      // a real Redis is running on the box.
+      async ping() {
+        return { status: 'ok' };
+      },
+    };
+
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule.forRoot()],
     })
       .overrideProvider(AppwriteService)
       .useValue(makeStubAppwrite())
+      .overrideProvider(ScheduleService)
+      .useValue(fakeSchedule)
+      .overrideProvider(REDIS_HEALTH)
+      .useValue(fakeRedisHealth)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -144,11 +186,25 @@ describe('AppModule (e2e-lite)', () => {
     if (app) await app.close();
   });
 
-  it('GET /health responds 200 with status + appwrite subsystem', async () => {
+  it('GET /health responds 200 with status + appwrite + redis subsystems', async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({ status: 'ok', appwrite: { status: 'ok' } });
+    const body = (await res.json()) as {
+      status: string;
+      appwrite: { status: string };
+      redis: { status: string; error?: string };
+    };
+    expect(body.status).toBe('ok');
+    expect(body.appwrite).toEqual({ status: 'ok' });
+    // Redis is expected to be `ok` in the normal CI path (where a local
+    // redis is running) OR `down` with an error string on a dev box with
+    // no redis. Either way the controller MUST return 200 with a
+    // structurally correct discriminated union; that's the health-policy
+    // contract the e2e-lite test is locking in.
+    expect(['ok', 'down']).toContain(body.redis.status);
+    if (body.redis.status === 'down') {
+      expect(typeof body.redis.error).toBe('string');
+    }
   });
 
   it('GET /unknown returns 404', async () => {

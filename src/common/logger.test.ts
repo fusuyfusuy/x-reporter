@@ -59,6 +59,7 @@ describe('LoggerModule', () => {
       APPWRITE_PROJECT_ID: 'proj_test',
       APPWRITE_API_KEY: 'key_test',
       APPWRITE_DATABASE_ID: 'xreporter',
+      REDIS_URL: 'redis://localhost:6379',
       X_CLIENT_ID: 'x_client_id',
       X_CLIENT_SECRET: 'x_client_secret',
       X_REDIRECT_URI: 'http://localhost:3000/auth/x/callback',

@@ -7,7 +7,6 @@ import {
 } from '../common/session.guard';
 import type { Env } from '../config/env';
 import { UsersController } from './users.controller';
-import { UsersRepo } from './users.repo';
 import { UsersService } from './users.service';
 
 /**
@@ -22,21 +21,21 @@ import { UsersService } from './users.service';
  *
  * Providers:
  *
- *   - `UsersRepo`         — thin Appwrite adapter (already provided
- *     by `AuthModule.forRoot` for the OAuth flow, but registered here
- *     too so `UsersModule` works without `AuthModule` in tests).
  *   - `UsersService`      — orchestrator for the `/me` flow.
  *   - `SessionGuard`      — gate on both routes.
  *   - `SESSION_GUARD_CONFIG` — value provider holding the HMAC secret.
  *
- * `ScheduleService` is NOT provided here. It's exported by
+ * `UsersRepo` is NOT provided here. It lives in the `@Global()`
+ * `UsersRepoModule` registered from `AppModule.forRoot()`, so Nest's
+ * DI resolves it for `UsersService` automatically. Consolidating the
+ * repo into a single global module is what unblocks
+ * `ScheduleService`'s cross-module dependency (see
+ * `users-repo.module.ts` header).
+ *
+ * `ScheduleService` is NOT provided here either. It's exported by
  * `ScheduleModule` (registered as `@Global()` from `AppModule`), so
  * Nest's DI resolves it for `UsersService` automatically in the full
- * application. Tests that instantiate `UsersModule.forRoot(env)` in
- * isolation must also import `ScheduleModule` (or override
- * `ScheduleService` directly). Keeping the schedule wiring out of
- * this module is what lets milestone #5 swap in the real BullMQ
- * implementation without touching this file.
+ * application.
  */
 @Module({})
 export class UsersModule {
@@ -53,7 +52,6 @@ export class UsersModule {
       module: UsersModule,
       controllers: [UsersController],
       providers: [
-        UsersRepo,
         UsersService,
         SessionGuard,
         {
@@ -61,7 +59,7 @@ export class UsersModule {
           useValue: sessionGuardConfig,
         },
       ],
-      exports: [UsersService, UsersRepo],
+      exports: [UsersService],
     };
   }
 }

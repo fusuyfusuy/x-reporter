@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { decrypt, encrypt, loadEncryptionKey } from '../common/crypto';
+import type { ScheduleService } from '../schedule/schedule.service';
 import type { TokenRecord, TokensRepo } from '../tokens/tokens.repo';
 import type { UserRecord, UsersRepo, UserStatus } from '../users/users.repo';
 import { AuthExpiredError, AuthService } from './auth.service';
@@ -32,11 +33,13 @@ function makeDeps(overrides: {
   xClient?: Partial<XOAuthClient>;
   users?: Partial<FakeUsersRepo>;
   tokens?: Partial<FakeTokensRepo>;
+  schedule?: Partial<FakeScheduleService>;
 }): {
   service: AuthService;
   xClient: FakeXOAuthClient;
   users: FakeUsersRepo;
   tokens: FakeTokensRepo;
+  schedule: FakeScheduleService;
 } {
   const xClient = new FakeXOAuthClient();
   Object.assign(xClient, overrides.xClient ?? {});
@@ -44,6 +47,8 @@ function makeDeps(overrides: {
   Object.assign(users, overrides.users ?? {});
   const tokens = new FakeTokensRepo();
   Object.assign(tokens, overrides.tokens ?? {});
+  const schedule = new FakeScheduleService();
+  Object.assign(schedule, overrides.schedule ?? {});
 
   const service = new AuthService(
     {
@@ -56,8 +61,36 @@ function makeDeps(overrides: {
     xClient,
     users as unknown as UsersRepo,
     tokens as unknown as TokensRepo,
+    schedule as unknown as ScheduleService,
   );
-  return { service, xClient, users, tokens };
+  return { service, xClient, users, tokens, schedule };
+}
+
+/**
+ * In-memory stand-in for `ScheduleService`. Records every upsert /
+ * remove call so the test can assert both ordering (upsert runs AFTER
+ * the tokens row lands on the happy path) and the failure-mode
+ * contract (a schedule throw rethrows out of `handleCallback`, and a
+ * schedule throw inside `failAuth` is swallowed so the caller still
+ * sees `AuthExpiredError`).
+ */
+class FakeScheduleService {
+  upsertCalls: string[] = [];
+  removeCalls: string[] = [];
+  /** Optional hook to simulate a schedule outage from `upsertJobsForUser`. */
+  upsertImpl: ((userId: string) => Promise<void>) | null = null;
+  /** Optional hook to simulate a schedule outage from `removeJobsForUser`. */
+  removeImpl: ((userId: string) => Promise<void>) | null = null;
+
+  async upsertJobsForUser(userId: string): Promise<void> {
+    this.upsertCalls.push(userId);
+    if (this.upsertImpl) return this.upsertImpl(userId);
+  }
+
+  async removeJobsForUser(userId: string): Promise<void> {
+    this.removeCalls.push(userId);
+    if (this.removeImpl) return this.removeImpl(userId);
+  }
 }
 
 /** Counts authorize-url builds and exchange/refresh calls. */
@@ -214,7 +247,7 @@ describe('AuthService.handleCallback', () => {
   }
 
   it('on the happy path: exchanges the code, upserts the user, persists encrypted tokens, returns a session cookie', async () => {
-    const { service, users, tokens, xClient } = makeDeps({});
+    const { service, users, tokens, xClient, schedule } = makeDeps({});
     xClient.exchangeCodeImpl = async () => ({
       accessToken: 'plain-access',
       refreshToken: 'plain-refresh',
@@ -254,6 +287,13 @@ describe('AuthService.handleCallback', () => {
     );
     expect(sessionPayload).not.toBeNull();
     expect(sessionPayload?.userId).toBe(result.userId);
+
+    // ScheduleService.upsertJobsForUser was called exactly once as the
+    // final step of the callback, so the BullMQ repeatables exist the
+    // moment the user's session cookie is minted. The acceptance
+    // criterion in the handoff locks this wiring.
+    expect(schedule.upsertCalls).toEqual([result.userId]);
+    expect(schedule.removeCalls).toEqual([]);
   });
 
   it('rejects when the query state does not match the cookie state', async () => {
@@ -332,6 +372,56 @@ describe('AuthService.handleCallback', () => {
         stateCookieValue: wronglySigned,
       }),
     ).rejects.toThrow(/state cookie/i);
+  });
+
+  it('rethrows when ScheduleService.upsertJobsForUser fails as the final callback step', async () => {
+    // Half-wired sign-in guard: if the schedule call at the end of
+    // handleCallback fails, we must NOT silently return a successful
+    // session cookie — that would leave the user with tokens persisted
+    // but no repeatable jobs, i.e. a user who can log in but will
+    // never be polled. The controller maps the rethrown error to the
+    // existing upstream-502 path.
+    const { service, tokens, schedule } = makeDeps({});
+    schedule.upsertImpl = async () => {
+      throw new Error('schedule boom: bullmq unavailable');
+    };
+    const { stateCookieValue, state } = await withFreshSignedState(service);
+
+    await expect(
+      service.handleCallback({ code: 'authcode', state, stateCookieValue }),
+    ).rejects.toThrow(/schedule boom/);
+
+    // Tokens were still persisted (the commit already happened) —
+    // a subsequent OAuth retry will re-upsert the schedule entry
+    // idempotently. Locking this so a future "rollback tokens on
+    // schedule failure" refactor has to make a deliberate choice.
+    expect(tokens.upsertCalls).toBe(1);
+    // And the schedule was attempted exactly once.
+    expect(schedule.upsertCalls).toHaveLength(1);
+  });
+
+  it('calls ScheduleService.upsertJobsForUser AFTER the tokens row is persisted, never before', async () => {
+    // Ordering lock: the real BullMQ impl reads cadence from UsersRepo
+    // inside upsertJobsForUser, and if we called it before the user
+    // row existed the first sign-in would upsert repeatables against
+    // a missing row (warn + no-op) and the workers would never run
+    // until the NEXT cadence change. Keep the schedule call AS THE
+    // LAST STEP of handleCallback.
+    const { service, tokens, schedule } = makeDeps({});
+    const order: string[] = [];
+    const originalUpsert = tokens.upsertForUser.bind(tokens);
+    tokens.upsertForUser = async (input) => {
+      order.push('tokens.upsertForUser');
+      return originalUpsert(input);
+    };
+    schedule.upsertImpl = async () => {
+      order.push('schedule.upsertJobsForUser');
+    };
+
+    const { stateCookieValue, state } = await withFreshSignedState(service);
+    await service.handleCallback({ code: 'authcode', state, stateCookieValue });
+
+    expect(order).toEqual(['tokens.upsertForUser', 'schedule.upsertJobsForUser']);
   });
 });
 
@@ -433,7 +523,7 @@ describe('AuthService.getValidAccessToken', () => {
   it('marks the user auth_expired and throws AuthExpiredError when refresh fails', async () => {
     const key = loadEncryptionKey(KEY_B64);
     const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const { service, users, tokens, xClient } = makeDeps({});
+    const { service, users, tokens, xClient, schedule } = makeDeps({});
     const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
     await tokens.upsertForUser({
       userId: u.id,
@@ -449,6 +539,74 @@ describe('AuthService.getValidAccessToken', () => {
     await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
     // The user was transitioned to auth_expired.
     expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
+    // …and the BullMQ repeatables were drained for that user so a
+    // stuck account stops being polled. The acceptance criterion in
+    // the handoff for #5 locks this side effect.
+    expect(schedule.removeCalls).toEqual([u.id]);
+  });
+
+  it('still throws AuthExpiredError when ScheduleService.removeJobsForUser fails inside failAuth (failure is swallowed + logged)', async () => {
+    // Don't let a queue outage mask the original auth failure: the
+    // user row already transitioned to `auth_expired`, so the caller
+    // must still receive the typed AuthExpiredError. The schedule
+    // failure is best-effort cleanup — workers also gate on the
+    // user's status, so a stale repeatable in Redis is harmless until
+    // the next reconciliation.
+    const key = loadEncryptionKey(KEY_B64);
+    const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { service, users, tokens, xClient, schedule } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('expired-access', key),
+      refreshToken: encrypt('expired-refresh', key),
+      expiresAt: past,
+      scope: 'tweet.read',
+    });
+    xClient.refreshImpl = async () => {
+      throw new Error('invalid_grant');
+    };
+    schedule.removeImpl = async () => {
+      throw new Error('redis ECONNREFUSED');
+    };
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    // status was still set
+    expect(users.setStatusCalls).toEqual([{ userId: u.id, status: 'auth_expired' }]);
+    // and the removal was attempted exactly once even though it threw
+    expect(schedule.removeCalls).toEqual([u.id]);
+  });
+
+  it('skips ScheduleService.removeJobsForUser when setStatus(auth_expired) itself fails', async () => {
+    // If the row is in an indeterminate state (status update failed),
+    // we must NOT drain the repeatables — that would leave a stuck
+    // user whose row is still `active` but whose schedules have been
+    // wiped, which is more confusing for operators than the original
+    // failure. Retries reconcile both in order.
+    const key = loadEncryptionKey(KEY_B64);
+    const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { service, users, tokens, xClient, schedule } = makeDeps({});
+    const u = await users.upsertByXUserId({ xUserId: '1', handle: 'h' });
+    await tokens.upsertForUser({
+      userId: u.id,
+      accessToken: encrypt('expired-access', key),
+      refreshToken: encrypt('expired-refresh', key),
+      expiresAt: past,
+      scope: 'tweet.read',
+    });
+    xClient.refreshImpl = async () => {
+      throw new Error('invalid_grant');
+    };
+    // Make setStatus fail too. The original setStatus implementation
+    // throws when the row doesn't exist; here we simulate any failure
+    // path (DB outage, race, etc.) by replacing the method.
+    users.setStatus = async () => {
+      throw new Error('appwrite write failed');
+    };
+
+    await expect(service.getValidAccessToken(u.id)).rejects.toBeInstanceOf(AuthExpiredError);
+    // No repeatable removal because the row state is unknown.
+    expect(schedule.removeCalls).toEqual([]);
   });
 
   it('recovers from a stale-refresh race instead of expiring the user', async () => {

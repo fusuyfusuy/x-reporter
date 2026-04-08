@@ -1,6 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ScheduleService } from '../schedule/schedule.service';
+import {
+  DEFAULT_DIGEST_INTERVAL_MIN,
+  DEFAULT_POLL_INTERVAL_MIN,
+} from './cadence.constants';
 import { type UpdateCadenceInput, type UserRecord, UsersRepo } from './users.repo';
+
+/**
+ * Re-exported here so existing consumers that import
+ * `DEFAULT_POLL_INTERVAL_MIN` / `DEFAULT_DIGEST_INTERVAL_MIN` from
+ * `users.service.ts` continue to compile unchanged. The values live
+ * in `./cadence.constants.ts` to break the import cycle with
+ * `schedule.service.ts` (see that file's header comment).
+ */
+export { DEFAULT_DIGEST_INTERVAL_MIN, DEFAULT_POLL_INTERVAL_MIN };
 
 /**
  * Application service for the `/me` surface. Sits between
@@ -44,16 +57,6 @@ import { type UpdateCadenceInput, type UserRecord, UsersRepo } from './users.rep
  * controller would have to `instanceof` against BullMQ / Redis errors
  * directly, leaking the adapter into the HTTP layer.
  */
-
-/**
- * Documented defaults for the cadence fields. Mirrors `data-model.md`
- * (the schema marks both fields optional so the app-layer default
- * applies to never-patched users) and `api.md` (the example response
- * uses 60 / 1440). Centralised here so any future change has exactly
- * one source of truth.
- */
-export const DEFAULT_POLL_INTERVAL_MIN = 60;
-export const DEFAULT_DIGEST_INTERVAL_MIN = 1440;
 
 /**
  * Wire shape returned to clients by `GET /me` and `PATCH /me`. Differs
