@@ -62,9 +62,13 @@ It introduces:
       (BullMQ processor in #7) can stop retrying.
    3. `GET https://api.twitter.com/2/users/:xUserId/liked_tweets` (or
       `/bookmarks`) with query params
+      `expansions=author_id`,
       `tweet.fields=entities,author_id,text`, `user.fields=username`,
       `max_results=100`, and `pagination_token=<cursor>` when `cursor` is
-      present. Header `Authorization: Bearer <accessToken>`.
+      present. Header `Authorization: Bearer <accessToken>`. The
+      `expansions=author_id` is what causes X to populate
+      `includes.users` — without it, `user.fields` is silently ignored
+      and `authorHandle` would always fall back to `''`.
    4. Abort the request after a configurable timeout
       (`DEFAULT_FETCH_TIMEOUT_MS = 10_000`).
    5. On non-2xx, throw an `Error` whose message includes the status and a

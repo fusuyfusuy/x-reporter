@@ -1,5 +1,4 @@
 import { type DynamicModule, Module } from '@nestjs/common';
-import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import type { Env } from '../config/env';
 import { UsersRepo } from '../users/users.repo';
@@ -25,16 +24,19 @@ import type { XSource } from './x-source.port';
  * Providers:
  *
  *   - `X_SOURCE` → factory that builds `XApiV2Source` from
- *     `AuthService` and `UsersRepo` (both imported from `AuthModule`).
+ *     `AuthService` and `UsersRepo`.
  *
- * Imports:
+ * Dependencies on `AuthModule`:
  *
- *   - `AuthModule.forRoot(env)` — brings `AuthService` AND `UsersRepo`
- *     into scope so the adapter's factory can pull them via the
- *     `inject` array without the ingestion module having to register
- *     its own copies. This keeps the hexagonal boundary intact: the
- *     ingestion adapter talks to the application service, not to the
- *     tokens collection directly.
+ *   `AuthService` and `UsersRepo` are injected via the `inject` array
+ *   below. They are resolved from the application-wide DI scope because
+ *   `AuthModule.forRoot(env)` is registered as `global: true` from
+ *   `AppModule`. We deliberately do NOT call `AuthModule.forRoot(env)`
+ *   here — doing so would build a second `HttpXOAuthClient` instance
+ *   and a duplicate `AuthController` route registration, breaking the
+ *   "one auth client per process" contract documented on `AuthModule`.
+ *   Tests that load `IngestionModule.forRoot` in isolation must import
+ *   `AuthModule.forRoot(env)` themselves as a sibling.
  */
 
 /**
@@ -50,7 +52,7 @@ export const X_API_V2_BASE_URL = 'https://api.twitter.com';
 
 @Module({})
 export class IngestionModule {
-  static forRoot(env: Env): DynamicModule {
+  static forRoot(_env: Env): DynamicModule {
     const config: XApiV2SourceConfig = {
       baseUrl: X_API_V2_BASE_URL,
       fetchTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
@@ -65,11 +67,9 @@ export class IngestionModule {
 
     return {
       module: IngestionModule,
-      // AuthModule is the source of both `AuthService` and `UsersRepo`,
-      // so one import covers both dependencies. Without this the factory
-      // would fail at boot because NestJS would have no provider for
-      // `AuthService` in the ingestion scope.
-      imports: [AuthModule.forRoot(env)],
+      // No `imports` here: `AuthService` and `UsersRepo` come from the
+      // global `AuthModule` registered once by `AppModule`. See the
+      // module-level docblock above for why.
       providers: [xSourceProvider],
       exports: [X_SOURCE],
     };
