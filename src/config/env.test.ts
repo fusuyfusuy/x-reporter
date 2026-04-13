@@ -9,7 +9,7 @@ const TEST_TOKEN_ENC_KEY = Buffer.alloc(32, 0).toString('base64');
 const TEST_SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
 
 /**
- * Minimal env with all required vars present as of milestone #3. Tests
+ * Minimal env with all required vars present as of milestone #9. Tests
  * spread this and override or omit as needed.
  */
 const baseEnv = {
@@ -24,6 +24,7 @@ const baseEnv = {
   X_SCOPES: 'tweet.read users.read offline.access',
   TOKEN_ENC_KEY: TEST_TOKEN_ENC_KEY,
   SESSION_SECRET: TEST_SESSION_SECRET,
+  OPENROUTER_API_KEY: 'sk-or-test-key',
 };
 
 describe('loadEnv', () => {
@@ -217,5 +218,24 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...baseEnv, SESSION_SECRET: 'too-short' })).toThrow(
       /SESSION_SECRET/,
     );
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Milestone #9: LLM vars become required
+  // ────────────────────────────────────────────────────────────────────
+
+  it('throws when OPENROUTER_API_KEY is missing', () => {
+    const { OPENROUTER_API_KEY: _omit, ...rest } = baseEnv;
+    expect(() => loadEnv(rest)).toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  it('defaults LLM_PROVIDER to openrouter', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.LLM_PROVIDER).toBe('openrouter');
+  });
+
+  it('defaults OPENROUTER_MODEL to anthropic/claude-sonnet-4.5', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.OPENROUTER_MODEL).toBe('anthropic/claude-sonnet-4.5');
   });
 });

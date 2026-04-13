@@ -133,6 +133,10 @@ describe('AppModule (e2e-lite)', () => {
     process.env.X_SCOPES = 'tweet.read users.read offline.access';
     process.env.TOKEN_ENC_KEY = Buffer.alloc(32, 0).toString('base64');
     process.env.SESSION_SECRET = TEST_SESSION_SECRET;
+    // LLM vars are required as of milestone #9. The values don't need to
+    // be real — `LlmModule.forRoot` constructs the adapter lazily and no
+    // test in this e2e-lite suite calls the LLM.
+    process.env.OPENROUTER_API_KEY = 'test_openrouter_key';
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 

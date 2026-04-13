@@ -16,6 +16,7 @@ const baseEnv = {
   TOKEN_ENC_KEY: Buffer.alloc(32, 0).toString('base64'),
   SESSION_SECRET: 'a-test-session-secret-at-least-32-chars-long',
   LLM_PROVIDER: 'openrouter' as const,
+  OPENROUTER_API_KEY: 'sk-or-test-key',
   OPENROUTER_MODEL: 'anthropic/claude-sonnet-4.5',
   EXTRACTOR: 'firecrawl' as const,
   POLL_X_CONCURRENCY: 5,

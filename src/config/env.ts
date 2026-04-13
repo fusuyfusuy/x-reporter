@@ -5,8 +5,10 @@ import { z } from 'zod';
  *
  * Several fields are still optional in this milestone and will be
  * tightened to required as their owning milestones land:
- *   - LLM vars       -> required by issue #9
  *   - Firecrawl vars -> required by issue #8
+ *
+ * Required as of milestone #9 (LlmProvider):
+ *   - OPENROUTER_API_KEY
  *
  * Required as of milestone #2 (Appwrite bootstrap):
  *   - APPWRITE_ENDPOINT
@@ -90,7 +92,7 @@ const EnvSchema = z.object({
 
   // ----- LLM (#9) -----
   LLM_PROVIDER: z.enum(['openrouter']).default('openrouter'),
-  OPENROUTER_API_KEY: z.string().min(1).optional(),
+  OPENROUTER_API_KEY: z.string().min(1),
   OPENROUTER_MODEL: z.string().min(1).default('anthropic/claude-sonnet-4.5'),
 
   // ----- Article extractor (#8) -----
