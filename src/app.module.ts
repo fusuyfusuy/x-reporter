@@ -4,6 +4,7 @@ import { AuthModule } from './auth/auth.module';
 import { LoggerModule } from './common/logger';
 import { loadEnv } from './config/env';
 import { HealthModule } from './health/health.module';
+import { LlmModule } from './digest/llm/llm.module';
 import { IngestionModule } from './ingestion/ingestion.module';
 import { QueueModule } from './queue/queue.module';
 import { ScheduleModule } from './schedule/schedule.module';
@@ -17,7 +18,7 @@ import { WorkersModule } from './workers/workers.module';
  * Use `AppModule.forRoot()` from `main.ts` so the env is loaded once at boot
  * and passed into modules that need to be configured at construction time
  * (`LoggerModule`, `AppwriteModule`, `QueueModule`, `AuthModule`,
- * `UsersModule`, `IngestionModule`).
+ * `UsersModule`, `IngestionModule`, `LlmModule`).
  *
  * Module registration order:
  *   1. Foundations: `LoggerModule`, `AppwriteModule`, `QueueModule`.
@@ -66,6 +67,7 @@ export class AppModule {
         UsersModule.forRoot(env),
         IngestionModule.forRoot(env),
         WorkersModule.forRoot(env),
+        LlmModule.forRoot(env),
       ],
     };
   }
