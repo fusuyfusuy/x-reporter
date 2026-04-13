@@ -93,6 +93,7 @@ describe('OpenRouterProvider', () => {
     expect(capturedCtorArgs).toMatchObject({
       modelName: 'anthropic/claude-sonnet-4.5',
       openAIApiKey: 'sk-test-key',
+      timeout: 60_000,
       configuration: {
         baseURL: 'https://openrouter.ai/api/v1',
         defaultHeaders: {
@@ -207,6 +208,29 @@ describe('OpenRouterProvider', () => {
     expect(msgs[0]?.content).toBe('Hello');
     expect(msgs[1]?.content).toBe('Hi there');
     expect(msgs[2]?.content).toBe('Follow up');
+  });
+
+  it('falls back to JSON.stringify when content is not a string', async () => {
+    const complexContent = [{ type: 'text', text: 'structured response' }];
+    // biome-ignore lint/suspicious/noExplicitAny: test mock needs flexible typing
+    fakeInvoke.mockImplementationOnce(async (): Promise<any> => ({
+      content: complexContent,
+      response_metadata: {
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      },
+    }));
+
+    const provider = new OpenRouterProvider({
+      apiKey: 'sk-test',
+      model: 'test/model',
+    });
+
+    const result = await provider.chat({
+      messages: [{ role: 'user', content: 'Hello' }],
+    });
+
+    expect(result.content).toBe(JSON.stringify(complexContent));
+    expect(result.usage).toEqual({ tokensIn: 10, tokensOut: 5 });
   });
 
   it('does not pass response_format for text mode', async () => {

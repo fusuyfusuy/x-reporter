@@ -33,6 +33,7 @@ export class OpenRouterProvider implements LlmProvider {
     this.client = new ChatOpenAI({
       modelName: config.model,
       openAIApiKey: config.apiKey,
+      timeout: 60_000,
       configuration: {
         baseURL: 'https://openrouter.ai/api/v1',
         defaultHeaders: {
