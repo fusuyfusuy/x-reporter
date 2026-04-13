@@ -37,6 +37,10 @@ export interface UserRecord {
    */
   pollIntervalMin?: number;
   digestIntervalMin?: number;
+  /** Opaque X pagination cursor for likes. Set by poll-x processor. */
+  lastLikeCursor?: string;
+  /** Opaque X pagination cursor for bookmarks. Set by poll-x processor. */
+  lastBookmarkCursor?: string;
 }
 
 /**
@@ -49,6 +53,11 @@ export interface UserRecord {
 export interface UpdateCadenceInput {
   pollIntervalMin?: number;
   digestIntervalMin?: number;
+}
+
+export interface UpdateCursorsInput {
+  lastLikeCursor?: string;
+  lastBookmarkCursor?: string;
 }
 
 /**
@@ -220,6 +229,34 @@ export class UsersRepo {
   }
 
   /**
+   * Update one or both pagination cursors. Called by the poll-x processor
+   * after items are persisted. Throws if the user does not exist (a cursor
+   * update on a missing user is a bug, not a race condition).
+   */
+  async updateCursors(
+    userId: string,
+    patch: UpdateCursorsInput,
+  ): Promise<UserRecord> {
+    const data: Record<string, unknown> = {};
+    if (patch.lastLikeCursor !== undefined) {
+      data.lastLikeCursor = patch.lastLikeCursor;
+    }
+    if (patch.lastBookmarkCursor !== undefined) {
+      data.lastBookmarkCursor = patch.lastBookmarkCursor;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new Error('updateCursors called with empty patch');
+    }
+    const updated = await this.db.updateDocument({
+      databaseId: this.databaseId,
+      collectionId: COLLECTION_ID,
+      documentId: userId,
+      data,
+    });
+    return toUserRecord(updated);
+  }
+
+  /**
    * Update only the `status` field for the given user. Used by
    * `AuthService.getValidAccessToken` when refresh fails so the next
    * scheduled poll knows to skip the user until they re-auth.
@@ -301,6 +338,8 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
   // into the controller's response.
   const pollIntervalMin = optionalIntegerField(doc, 'pollIntervalMin');
   const digestIntervalMin = optionalIntegerField(doc, 'digestIntervalMin');
+  const lastLikeCursor = optionalStringField(doc, 'lastLikeCursor');
+  const lastBookmarkCursor = optionalStringField(doc, 'lastBookmarkCursor');
   return {
     id: doc.$id,
     xUserId,
@@ -309,6 +348,8 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
     createdAt,
     ...(pollIntervalMin !== undefined ? { pollIntervalMin } : {}),
     ...(digestIntervalMin !== undefined ? { digestIntervalMin } : {}),
+    ...(lastLikeCursor !== undefined ? { lastLikeCursor } : {}),
+    ...(lastBookmarkCursor !== undefined ? { lastBookmarkCursor } : {}),
   };
 }
 
@@ -325,6 +366,18 @@ const CADENCE_MINIMUMS: Record<string, number> = {
   pollIntervalMin: 5,
   digestIntervalMin: 15,
 };
+
+function optionalStringField(
+  doc: Record<string, unknown> & { $id: string },
+  key: string,
+): string | undefined {
+  const value = doc[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`users row ${doc.$id} has non-string ${key}: ${String(value)}`);
+  }
+  return value;
+}
 
 function optionalIntegerField(
   doc: Record<string, unknown> & { $id: string },

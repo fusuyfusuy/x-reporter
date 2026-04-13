@@ -67,6 +67,10 @@ export class IngestionModule {
 
     return {
       module: IngestionModule,
+      // `global: true` so `WorkersModule` (milestone #7) can inject
+      // `X_SOURCE` without re-importing IngestionModule. Same pattern
+      // as `AuthModule` and `QueueModule`.
+      global: true,
       // No `imports` here: `AuthService` and `UsersRepo` come from the
       // global `AuthModule` registered once by `AppModule`. See the
       // module-level docblock above for why.

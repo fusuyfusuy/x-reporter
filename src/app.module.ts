@@ -9,6 +9,7 @@ import { QueueModule } from './queue/queue.module';
 import { ScheduleModule } from './schedule/schedule.module';
 import { UsersModule } from './users/users.module';
 import { UsersRepoModule } from './users/users-repo.module';
+import { WorkersModule } from './workers/workers.module';
 
 /**
  * The application root module.
@@ -64,6 +65,7 @@ export class AppModule {
         AuthModule.forRoot(env),
         UsersModule.forRoot(env),
         IngestionModule.forRoot(env),
+        WorkersModule.forRoot(env),
       ],
     };
   }

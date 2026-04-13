@@ -588,13 +588,11 @@ function toItemRecord(doc: Record<string, unknown> & { $id: string }): ItemRecor
 }
 ```
 
-Wait — the `findByUserAndTweetId` approach is problematic. The 409 conflict handler needs to find the existing document's ID. Let me rethink.
+The initial approach above lacked `listDocuments` for conflict resolution.
+The final implementation uses `ID.unique()` + compound unique index +
+`listDocuments` query on 409 to retrieve the existing document ID.
 
-Actually, I'll take a simpler approach: track a local `Map<string, string>` inside `upsertMany` for items we've already created in this batch, and for 409 conflicts, use `listDocuments` with a query. Let me add `listDocuments` to the structural interface.
-
-Let me rewrite this properly.
-
-Create `src/workers/items.repo.ts`:
+Create `src/workers/items.repo.ts` (final version):
 
 ```ts
 import { Injectable } from '@nestjs/common';
@@ -1346,7 +1344,8 @@ export class WorkersModule implements OnModuleInit, OnModuleDestroy {
 }
 ```
 
-Wait — there's a problem. The concurrency should come from the `forRoot(env)` call, but the module instance that runs `onModuleInit` can't easily access the value passed to the static method. Let me restructure to use a provider for concurrency.
+The concurrency value from `forRoot(env)` is passed to the module instance
+via a DI provider token, allowing `onModuleInit` to access it.
 
 ```ts
 import {

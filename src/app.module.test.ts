@@ -6,6 +6,7 @@ import { SESSION_COOKIE_NAME } from './auth/auth.controller';
 import { signCookieValue } from './auth/cookies';
 import { REDIS_HEALTH, type RedisHealthPort } from './queue/queue.tokens';
 import { ScheduleService } from './schedule/schedule.service';
+import { WorkersLifecycle } from './workers/workers.module';
 
 const TEST_SESSION_SECRET = 'a-test-session-secret-at-least-32-chars-long';
 const TEST_USER_ID = 'u_e2e_test_abc';
@@ -173,6 +174,10 @@ describe('AppModule (e2e-lite)', () => {
       .useValue(fakeSchedule)
       .overrideProvider(REDIS_HEALTH)
       .useValue(fakeRedisHealth)
+      // WorkersLifecycle creates BullMQ Workers on init that connect to
+      // Redis. Override with a no-op so the e2e-lite test works offline.
+      .overrideProvider(WorkersLifecycle)
+      .useValue({ onModuleInit() {}, async onModuleDestroy() {} })
       .compile();
 
     app = moduleRef.createNestApplication();
