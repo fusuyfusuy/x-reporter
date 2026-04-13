@@ -139,6 +139,9 @@ describe('XApiV2Source.fetchLikes — happy path', () => {
     const headers = new Headers(call.init?.headers);
     expect(headers.get('authorization')).toBe('Bearer my-access-token');
     expect(headers.get('accept')).toBe('application/json');
+    // Verify the AbortController signal is wired through so the timeout
+    // path can actually cancel the request.
+    expect(call.init?.signal).toBeInstanceOf(AbortSignal);
 
     // Mapping check — both tweets should be stamped with kind='like'.
     expect(page.items).toEqual([

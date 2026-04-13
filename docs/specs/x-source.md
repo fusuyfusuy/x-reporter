@@ -26,6 +26,7 @@ It introduces:
 
 2. **`XSource` port** (`src/ingestion/x-source.port.ts`) — the only thing
    the rest of the system knows about for reading tweets. Shape:
+
    ```ts
    export type TweetKind = 'like' | 'bookmark';
 
@@ -47,6 +48,7 @@ It introduces:
      fetchBookmarks(userId: string, cursor?: string): Promise<FetchPage>;
    }
    ```
+
    `userId` is the internal Appwrite document id (`users.$id`), NOT the
    X numeric user id — it is what `AuthService.getValidAccessToken`
    consumes. The adapter is responsible for resolving the X user id
@@ -81,11 +83,13 @@ It introduces:
 
 4. **`url-extractor`** (`src/ingestion/url-extractor.ts`) — a pure,
    framework-free function with signature:
+
    ```ts
    interface EntityUrl { expanded_url?: string; url?: string }
    interface TweetForExtraction { text: string; entities?: { urls?: EntityUrl[] } }
    export function extractUrls(tweet: TweetForExtraction): string[];
    ```
+
    Logic:
    - **Source selection**: if `entities.urls` is present and non-empty, use
      `expanded_url` from each entry (skipping entries without one); if any
