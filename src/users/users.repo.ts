@@ -55,6 +55,11 @@ export interface UpdateCadenceInput {
   digestIntervalMin?: number;
 }
 
+export interface UpdateCursorsInput {
+  lastLikeCursor?: string;
+  lastBookmarkCursor?: string;
+}
+
 /**
  * Structural type capturing only the slice of `appwrite.databases` that
  * `UsersRepo` actually uses. Declared here so the in-memory test fake can
@@ -221,6 +226,34 @@ export class UsersRepo {
       if (isNotFound(err)) return null;
       throw err;
     }
+  }
+
+  /**
+   * Update one or both pagination cursors. Called by the poll-x processor
+   * after items are persisted. Throws if the user does not exist (a cursor
+   * update on a missing user is a bug, not a race condition).
+   */
+  async updateCursors(
+    userId: string,
+    patch: UpdateCursorsInput,
+  ): Promise<UserRecord> {
+    const data: Record<string, unknown> = {};
+    if (patch.lastLikeCursor !== undefined) {
+      data.lastLikeCursor = patch.lastLikeCursor;
+    }
+    if (patch.lastBookmarkCursor !== undefined) {
+      data.lastBookmarkCursor = patch.lastBookmarkCursor;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new Error('updateCursors called with empty patch');
+    }
+    const updated = await this.db.updateDocument({
+      databaseId: this.databaseId,
+      collectionId: COLLECTION_ID,
+      documentId: userId,
+      data,
+    });
+    return toUserRecord(updated);
   }
 
   /**

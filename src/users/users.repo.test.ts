@@ -441,3 +441,56 @@ describe('UsersRepo.updateCadence', () => {
     await expect(repo.updateCadence(u.id, {})).rejects.toThrow();
   });
 });
+
+describe('UsersRepo.updateCursors', () => {
+  it('writes lastLikeCursor and returns the updated record', async () => {
+    const { repo } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const updated = await repo.updateCursors(u.id, { lastLikeCursor: 'cursor-abc' });
+    expect(updated.id).toBe(u.id);
+    expect(updated.lastLikeCursor).toBe('cursor-abc');
+    expect(updated.lastBookmarkCursor).toBeUndefined();
+  });
+
+  it('writes lastBookmarkCursor and returns the updated record', async () => {
+    const { repo } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const updated = await repo.updateCursors(u.id, { lastBookmarkCursor: 'cursor-xyz' });
+    expect(updated.lastBookmarkCursor).toBe('cursor-xyz');
+  });
+
+  it('writes both cursors when both are supplied', async () => {
+    const { repo } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const updated = await repo.updateCursors(u.id, {
+      lastLikeCursor: 'lc',
+      lastBookmarkCursor: 'bc',
+    });
+    expect(updated.lastLikeCursor).toBe('lc');
+    expect(updated.lastBookmarkCursor).toBe('bc');
+  });
+
+  it('leaves an unspecified cursor untouched on a partial patch', async () => {
+    const { repo, db } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    await repo.updateCursors(u.id, { lastLikeCursor: 'lc', lastBookmarkCursor: 'bc' });
+    const after = await repo.updateCursors(u.id, { lastLikeCursor: 'lc2' });
+    expect(after.lastLikeCursor).toBe('lc2');
+    expect(after.lastBookmarkCursor).toBe('bc');
+    const stored = db.docs.get(u.id);
+    expect(stored?.lastBookmarkCursor).toBe('bc');
+  });
+
+  it('throws when the user does not exist', async () => {
+    const { repo } = makeRepo();
+    await expect(
+      repo.updateCursors('does-not-exist', { lastLikeCursor: 'x' }),
+    ).rejects.toThrow();
+  });
+
+  it('throws on an empty patch', async () => {
+    const { repo } = makeRepo();
+    const u = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    await expect(repo.updateCursors(u.id, {})).rejects.toThrow();
+  });
+});
