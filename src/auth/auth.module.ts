@@ -131,6 +131,14 @@ export class AuthModule {
 
     return {
       module: AuthModule,
+      // `global: true` is what lets downstream feature modules
+      // (`IngestionModule`, future `WorkersModule`) inject `AuthService`
+      // / `UsersRepo` without having to call `AuthModule.forRoot(env)`
+      // a second time. Calling `forRoot` twice would build a second
+      // `HttpXOAuthClient` (and a duplicate `AuthController` route
+      // registration), which the module's design contract — "the same
+      // `HttpXOAuthClient` instance backs the whole process" — forbids.
+      global: true,
       controllers: [AuthController],
       providers: [
         TokensRepo,

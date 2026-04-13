@@ -12,38 +12,63 @@ model, and call site, so it lives behind its own port.
 
 ## 1. `XSource`
 
-Where it lives: `src/ingestion/x-source.interface.ts`
+Where it lives: `src/ingestion/x-source.port.ts`
 Default impl: `src/ingestion/x-api-v2.source.ts`
 
 ```ts
-export interface RawTweet {
-  id: string;            // X tweet snowflake
+export type TweetKind = 'like' | 'bookmark';
+
+export interface TweetItem {
+  tweetId: string;        // X tweet snowflake
   text: string;
-  authorHandle: string;
-  urls: string[];        // expanded URLs
-  createdAt: string;     // ISO
+  authorHandle: string;   // X handle without leading '@'; '' if unresolved
+  urls: string[];         // expanded, t.co-stripped, deduped, sorted
+  kind: TweetKind;        // stamped by the adapter so downstream consumers never guess
 }
 
 export interface FetchPage {
-  tweets: RawTweet[];
-  nextCursor?: string;
+  items: TweetItem[];
+  nextCursor?: string;    // `meta.next_token` from X; absent = end of history
 }
 
 export interface XSource {
-  /** Fetch new likes since `cursor`. Returns at most one page. */
+  /** Fetch at most one page of liked tweets. `userId` is the Appwrite id, not the X numeric id. */
   fetchLikes(userId: string, cursor?: string): Promise<FetchPage>;
 
-  /** Fetch new bookmarks since `cursor`. Returns at most one page. */
+  /** Fetch at most one page of bookmarks. `userId` is the Appwrite id, not the X numeric id. */
   fetchBookmarks(userId: string, cursor?: string): Promise<FetchPage>;
 }
 ```
 
+**Shape notes:**
+- `tweetId` rather than `id` makes the field unambiguous at call sites
+  that juggle multiple kinds of id (userId, tweetId, cursor).
+- `kind` is stamped by the adapter so the `poll-x` processor (#7) can
+  pass the value straight into `items.kind` without tracking which
+  `fetch*` call produced a given item.
+- `createdAt` is intentionally absent. The `items` collection stores
+  `fetchedAt` (ingest time), not the tweet's original creation time, so
+  reading it off the X response would be wasted bytes for v1.
+- `items` mirrors the `items` collection name in
+  [data-model.md](./data-model.md).
+
 **Default impl notes:**
 - Uses X API v2 endpoints `/2/users/:id/liked_tweets` and `/2/users/:id/bookmarks`.
-- Reads OAuth2 tokens from `tokens` collection via `AuthService`.
-- Refreshes the access token if expired before each call.
-- Pagination via `pagination_token`. Cursor is the most recent `pagination_token` we've consumed.
-- Maps `entities.urls[].expanded_url` into `RawTweet.urls`.
+- Resolves the X numeric id via `UsersRepo.findById(userId)`; refuses to
+  poll a user whose status is not `active`.
+- Reads a fresh bearer token for every call via
+  `AuthService.getValidAccessToken(userId)`; `AuthExpiredError`
+  propagates untouched so the #7 processor can stop retrying.
+- Parses the response with a strict zod schema (`id` and `text` are
+  required; everything else is optional/passthrough).
+- Pagination via `pagination_token`. The cursor on the way in is the
+  `pagination_token` of the next page; `FetchPage.nextCursor` is
+  `meta.next_token` from the response, or `undefined` when exhausted.
+- Maps `entities.urls[].expanded_url` into `TweetItem.urls` via
+  `./url-extractor.ts`, falling back to a text regex when entities are
+  absent; `t.co` wrappers are filtered in both branches.
+- Wired into NestJS via `IngestionModule` under the `X_SOURCE` string
+  token (exported from the same module).
 
 **Other impls you could swap in:**
 - `XBrowserSource` — headless browser using stored cookies. No API costs.
