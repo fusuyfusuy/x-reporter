@@ -346,6 +346,28 @@ describe('UsersRepo.findById', () => {
     stored.digestIntervalMin = 14;
     await expect(repo.findById(created.id)).rejects.toThrow(/out-of-range/);
   });
+
+  it('surfaces stored cursor values when present on the row', async () => {
+    const { repo, db } = makeRepo();
+    const created = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const stored = db.docs.get(created.id);
+    if (!stored) throw new Error('seeded row missing');
+    stored.lastLikeCursor = 'abc123';
+    stored.lastBookmarkCursor = 'def456';
+    const found = await repo.findById(created.id);
+    expect(found).not.toBeNull();
+    expect((found as UserRecord).lastLikeCursor).toBe('abc123');
+    expect((found as UserRecord).lastBookmarkCursor).toBe('def456');
+  });
+
+  it('leaves cursors undefined when the row has never been polled', async () => {
+    const { repo } = makeRepo();
+    const created = await repo.upsertByXUserId({ xUserId: '12345', handle: 'h' });
+    const found = await repo.findById(created.id);
+    expect(found).not.toBeNull();
+    expect((found as UserRecord).lastLikeCursor).toBeUndefined();
+    expect((found as UserRecord).lastBookmarkCursor).toBeUndefined();
+  });
 });
 
 describe('UsersRepo.updateCadence', () => {

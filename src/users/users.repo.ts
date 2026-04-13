@@ -37,6 +37,10 @@ export interface UserRecord {
    */
   pollIntervalMin?: number;
   digestIntervalMin?: number;
+  /** Opaque X pagination cursor for likes. Set by poll-x processor. */
+  lastLikeCursor?: string;
+  /** Opaque X pagination cursor for bookmarks. Set by poll-x processor. */
+  lastBookmarkCursor?: string;
 }
 
 /**
@@ -301,6 +305,8 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
   // into the controller's response.
   const pollIntervalMin = optionalIntegerField(doc, 'pollIntervalMin');
   const digestIntervalMin = optionalIntegerField(doc, 'digestIntervalMin');
+  const lastLikeCursor = optionalStringField(doc, 'lastLikeCursor');
+  const lastBookmarkCursor = optionalStringField(doc, 'lastBookmarkCursor');
   return {
     id: doc.$id,
     xUserId,
@@ -309,6 +315,8 @@ function toUserRecord(doc: Record<string, unknown> & { $id: string }): UserRecor
     createdAt,
     ...(pollIntervalMin !== undefined ? { pollIntervalMin } : {}),
     ...(digestIntervalMin !== undefined ? { digestIntervalMin } : {}),
+    ...(lastLikeCursor !== undefined ? { lastLikeCursor } : {}),
+    ...(lastBookmarkCursor !== undefined ? { lastBookmarkCursor } : {}),
   };
 }
 
@@ -325,6 +333,18 @@ const CADENCE_MINIMUMS: Record<string, number> = {
   pollIntervalMin: 5,
   digestIntervalMin: 15,
 };
+
+function optionalStringField(
+  doc: Record<string, unknown> & { $id: string },
+  key: string,
+): string | undefined {
+  const value = doc[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`users row ${doc.$id} has non-string ${key}: ${String(value)}`);
+  }
+  return value;
+}
 
 function optionalIntegerField(
   doc: Record<string, unknown> & { $id: string },
