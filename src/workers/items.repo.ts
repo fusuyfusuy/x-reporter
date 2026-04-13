@@ -99,7 +99,8 @@ export class ItemsRepo {
 
 function isConflict(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  return (err as { code?: number }).code === 409;
+  const e = err as { code?: number; type?: string };
+  return e.code === 409 || e.type === 'document_already_exists';
 }
 
 function toItemRecord(doc: Record<string, unknown> & { $id: string }): ItemRecord {

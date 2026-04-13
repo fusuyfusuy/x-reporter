@@ -37,7 +37,8 @@ Scope:
    c. Fetch bookmarks: call `XSource.fetchBookmarks(userId, user.lastBookmarkCursor)`,
       follow `nextCursor` until exhausted. Collect all `TweetItem[]`.
    d. Upsert all collected items via `ItemsRepo.upsertMany(userId, items)`.
-      Dedup on `(userId, xTweetId)` using deterministic document IDs.
+      Dedup on `(userId, xTweetId)` using `ID.unique()` document IDs with
+      a compound unique index; 409 conflicts indicate duplicates.
       Returns `{ id: string; isNew: boolean }[]` so the processor knows
       which items are newly created.
    e. Enqueue `extract-item` jobs: for each new item with non-empty
@@ -47,7 +48,7 @@ Scope:
       with the final cursor from each pagination run. Only called after
       items are persisted — cursors advance only on successful upsert.
    g. Log completion: `userId`, `attempt`, `durationMs`, `newLikes`,
-      `newBookmarks`, `extractJobsEnqueued`.
+      `newBookmarks`, `newItems`, `extractJobsEnqueued`.
 
    Error handling:
    - **Auth failure**: if `XSource` throws `AuthExpiredError` (exported
@@ -85,9 +86,9 @@ Scope:
    ```ts
    async upsertMany(userId: string, items: TweetItem[]): Promise<{ id: string; isNew: boolean }[]>
    ```
-   - Document ID: deterministic `${userId}:${xTweetId}` — avoids
-     TOCTOU races (same pattern as `TokensRepo` using `userId` as
-     document ID).
+   - Document ID: `ID.unique()` with a compound unique index on
+     `(userId, xTweetId)`. On 409 conflict (or `document_already_exists`
+     type), query back the existing document and mark `isNew: false`.
    - For each item: try create; on 409 conflict, mark `isNew: false`.
    - Sets `fetchedAt` to current ISO timestamp on create.
    - Sets `enriched` to `false` on create.
@@ -126,9 +127,9 @@ Scope:
      - `concurrency`: `env.POLL_X_CONCURRENCY` (default 5)
    - In `onModuleDestroy`: calls `worker.close()` for graceful
      shutdown (waits for in-flight jobs to finish).
-   - Retry config set as default job options on the Worker:
-     `attempts: 5`, `backoff: { type: 'exponential', delay: 30_000 }`,
-     with a cap at 10 minutes.
+   - Retry/backoff configured via job options on `queue.add()` or
+     Queue `defaultJobOptions`. `poll-x` Worker: 5 attempts, exponential
+     backoff base 30s, max 10m (per `docs/jobs.md`).
 
    Registered in `AppModule.forRoot()` after `IngestionModule`:
    ```ts
@@ -161,18 +162,18 @@ Scope:
   fetch many pages. This is acceptable because the work runs in a
   BullMQ processor (not on the request path) and X API rate limits
   provide natural backpressure.
-- **Deterministic document IDs for items**: `${userId}:${xTweetId}`
-  ensures concurrent retries or overlapping polls cannot create
-  duplicate items.
+- **Compound unique index for items**: the `(userId, xTweetId)` unique
+  index combined with 409 conflict handling ensures concurrent retries
+  or overlapping polls cannot create duplicate items.
 - **Extract-item enqueuing is best-effort per job**: if the processor
   crashes after upserting items but before enqueuing extract-item jobs,
   the retry will re-upsert (no-op due to dedup) and enqueue. Items
   that were already enqueued on the previous attempt will produce
   duplicate extract-item jobs — the extract-item processor (milestone
   #8) must be idempotent.
-- **Retry config lives on the Worker**, not on individual `queue.add()`
-  calls. The `poll-x` Worker defaults: 5 attempts, exponential backoff
-  base 30s, max 10m (per `docs/jobs.md`).
+- **Retry config** set via job options on `queue.add()` or Queue
+  `defaultJobOptions`. The `poll-x` defaults: 5 attempts, exponential
+  backoff base 30s, max 10m (per `docs/jobs.md`).
 - **Version**: bump `package.json` from `0.6.0` → `0.7.0`.
 
 ## Acceptance Criteria
@@ -187,7 +188,8 @@ Scope:
       retrying (user is already marked `auth_expired` by AuthService).
 - [ ] Retries per `docs/jobs.md` (5 attempts, exponential 30s base,
       10m cap).
-- [ ] Logs `userId`, `attempt`, `durationMs`, `newItems`.
+- [ ] Logs `userId`, `attempt`, `durationMs`, `newLikes`, `newBookmarks`,
+      `newItems`, `extractJobsEnqueued`.
 - [ ] E2E test using a stub `XSource` injected via the Nest test
       module verifies: items created, cursors updated, extract-item
       jobs enqueued for items with URLs, no extract jobs for items

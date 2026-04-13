@@ -18,7 +18,10 @@ export class PollXProcessor {
 
   constructor(
     @Inject(X_SOURCE) private readonly xSource: XSource,
-    @Inject(EXTRACT_ITEM_QUEUE) private readonly extractQueue: { add(name: string, data: unknown): Promise<unknown> },
+    @Inject(EXTRACT_ITEM_QUEUE)
+    private readonly extractQueue: {
+      add(name: string, data: unknown, opts?: Record<string, unknown>): Promise<unknown>;
+    },
     private readonly users: UsersRepo,
     private readonly items: ItemsRepo,
   ) {}
@@ -65,10 +68,16 @@ export class PollXProcessor {
       const result = allResults[i]!;
       const item = allItems[i]!;
       if (result.isNew && item.urls.length > 0) {
-        await this.extractQueue.add('extract-item', {
-          userId,
-          itemId: result.id,
-        });
+        await this.extractQueue.add(
+          'extract-item',
+          { userId, itemId: result.id },
+          {
+            attempts: 4,
+            backoff: { type: 'exponential', delay: 15_000 },
+            removeOnComplete: { age: 86_400, count: 1000 },
+            removeOnFail: { age: 604_800 },
+          },
+        );
         extractJobsEnqueued++;
       }
     }
@@ -81,12 +90,15 @@ export class PollXProcessor {
     }
 
     const durationMs = Date.now() - start;
+    const newLikes = likeResults.filter((r) => r.isNew).length;
+    const newBookmarks = bookmarkResults.filter((r) => r.isNew).length;
     this.logger.log('poll complete', {
       userId,
-      attempt: job.attemptsMade,
+      attempt: job.attemptsMade + 1,
       durationMs,
-      newLikes: likeResults.filter((r) => r.isNew).length,
-      newBookmarks: bookmarkResults.filter((r) => r.isNew).length,
+      newLikes,
+      newBookmarks,
+      newItems: newLikes + newBookmarks,
       extractJobsEnqueued,
     });
   }

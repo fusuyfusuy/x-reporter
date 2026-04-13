@@ -26,14 +26,14 @@ Hexagonal (ports & adapters) with NestJS DI. Three swap-point interfaces: **XSou
 
 ### Module Dependency Order
 
-`LoggerModule → AppwriteModule → QueueModule → UsersRepoModule (global) → ScheduleModule (global) → feature modules (Auth, Users, Ingestion, Health)`
+`LoggerModule → AppwriteModule → QueueModule → UsersRepoModule (global) → ScheduleModule (global) → feature modules (Auth, Users, Ingestion, Workers, Health)`
 
 All modules use a static `.forRoot(env: Env)` factory receiving the validated env config.
 
 ### Key Rules
 
 - **Domain layer never imports infrastructure.** No BullMQ types, Appwrite SDK types, or NestJS decorators in domain code.
-- **BullMQ + ioredis types confined to `src/queue/` and `src/schedule/`** — everything else uses string DI tokens.
+- **BullMQ + ioredis types confined to `src/queue/`, `src/schedule/`, and `src/workers/`** — everything else uses string DI tokens.
 - **Repos return plain TypeScript shapes**, never Appwrite `Models.Document<T>` envelopes.
 - **All external I/O goes through a port interface** — never call X API, Firecrawl, OpenRouter, or Appwrite directly from domain code.
 - **Long-running work belongs in BullMQ processors**, never on the HTTP request path.
