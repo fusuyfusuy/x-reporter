@@ -174,11 +174,24 @@ export class ScheduleService {
    * we could not remove schedulers for a user whose row is gone.
    */
   async removeJobsForUser(userId: string): Promise<void> {
-    // Run both removals regardless of the first result. We want both
-    // schedulers gone even if one was already removed manually or by a
-    // previous failAuth call.
-    await this.pollXQueue.removeJobScheduler(pollSchedulerId(userId));
-    await this.buildDigestQueue.removeJobScheduler(digestSchedulerId(userId));
+    // Run both removals in parallel. Promise.allSettled ensures the
+    // second removal is attempted even if the first throws (e.g. a
+    // transient Redis error or a manually pre-removed scheduler). We
+    // log any rejection at warn so failures are visible without
+    // letting them prevent the other removal from running.
+    const results = await Promise.allSettled([
+      this.pollXQueue.removeJobScheduler(pollSchedulerId(userId)),
+      this.buildDigestQueue.removeJobScheduler(digestSchedulerId(userId)),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        const message =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
+        this.logger.warn(`removeJobsForUser(${userId}): ${message}`);
+      }
+    }
   }
 }
 

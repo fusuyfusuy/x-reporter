@@ -264,9 +264,13 @@ describe('ScheduleService.upsertJobsForUser', () => {
     expect(pollQueue.schedulers.get('user:u_abc:poll')?.data).toEqual({
       userId: 'u_abc',
     });
+    expect(pollQueue.schedulers.get('user:u_abc:poll')?.jobName).toBe('poll-x');
     expect(digestQueue.schedulers.get('user:u_abc:digest')?.data).toEqual({
       userId: 'u_abc',
     });
+    expect(digestQueue.schedulers.get('user:u_abc:digest')?.jobName).toBe(
+      'build-digest',
+    );
   });
 
   it('does not touch the extract-item queue (that queue is populated by poll-x in #7, never by ScheduleService)', async () => {
