@@ -1,6 +1,7 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { loadEncryptionKey } from '../common/crypto';
 import type { Env } from '../config/env';
+import { ScheduleService } from '../schedule/schedule.service';
 import { TokensRepo } from '../tokens/tokens.repo';
 import { UsersRepo } from '../users/users.repo';
 import {
@@ -24,14 +25,22 @@ import {
  *
  * Providers registered:
  *
- *   - `UsersRepo`     — thin adapter over AppwriteService.databases.
  *   - `TokensRepo`    — thin adapter over AppwriteService.databases.
  *   - `XOAuthClient`  — token `'XOAuthClient'`, bound to `HttpXOAuthClient`.
  *                       AuthService injects it via the symbolic token so the
  *                       interface / adapter boundary stays explicit.
  *   - `AuthService`   — orchestrator; receives the config + XOAuthClient +
- *                       repos.
+ *                       repos + the global `ScheduleService`.
  *   - `AuthController` — receives the service + cookie config.
+ *
+ * `UsersRepo` is no longer provided here. It lives in the `@Global()`
+ * `UsersRepoModule` (registered from `AppModule.forRoot()`) so the
+ * same instance is resolvable by `AuthService`, `UsersService`, AND
+ * `ScheduleService` without each module re-declaring the provider.
+ * That move was required by milestone #5: `ScheduleService` depends on
+ * `UsersRepo` to read cadence defaults, and `ScheduleModule` is
+ * registered before `AuthModule` in the root, so the old "provided by
+ * AuthModule" wiring was invisible at ScheduleService construction time.
  *
  * The `XOAuthClient` token is a string rather than the interface itself
  * because TypeScript interfaces don't exist at runtime. Consumers outside
@@ -102,9 +111,17 @@ export class AuthModule {
 
     const authServiceProvider = {
       provide: AuthService,
-      useFactory: (xClient: XOAuthClient, users: UsersRepo, tokens: TokensRepo) =>
-        new AuthService(authServiceConfig, xClient, users, tokens),
-      inject: [X_OAUTH_CLIENT, UsersRepo, TokensRepo],
+      useFactory: (
+        xClient: XOAuthClient,
+        users: UsersRepo,
+        tokens: TokensRepo,
+        schedule: ScheduleService,
+      ) => new AuthService(authServiceConfig, xClient, users, tokens, schedule),
+      // `UsersRepo` and `ScheduleService` are resolved from global
+      // modules (`UsersRepoModule` and `ScheduleModule` respectively) —
+      // Nest looks them up in the global provider scope because neither
+      // is provided locally here.
+      inject: [X_OAUTH_CLIENT, UsersRepo, TokensRepo, ScheduleService],
     };
 
     const authControllerConfigProvider = {
@@ -116,13 +133,16 @@ export class AuthModule {
       module: AuthModule,
       controllers: [AuthController],
       providers: [
-        UsersRepo,
         TokensRepo,
         xClientProvider,
         authServiceProvider,
         authControllerConfigProvider,
       ],
-      exports: [AuthService, UsersRepo, TokensRepo],
+      // `UsersRepo` is no longer re-exported here — consumers that
+      // previously relied on `AuthModule` re-exporting it now pick it
+      // up directly from `UsersRepoModule` (registered as `@Global()`
+      // from `AppModule.forRoot()`).
+      exports: [AuthService, TokensRepo],
     };
   }
 }

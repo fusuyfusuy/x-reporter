@@ -1,6 +1,6 @@
 {
   "name": "x-reporter",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Per-user X likes/bookmarks digest service (Bun + NestJS)",
@@ -18,6 +18,8 @@
     "@nestjs/common": "11.1.18",
     "@nestjs/core": "11.1.18",
     "@nestjs/platform-express": "11.1.18",
+    "bullmq": "^5.73.0",
+    "ioredis": "^5.10.1",
     "nestjs-pino": "4.6.1",
     "node-appwrite": "23.1.0",
     "pino": "10.3.1",

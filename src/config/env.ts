@@ -5,7 +5,6 @@ import { z } from 'zod';
  *
  * Several fields are still optional in this milestone and will be
  * tightened to required as their owning milestones land:
- *   - Redis URL      -> required by issue #5
  *   - LLM vars       -> required by issue #9
  *   - Firecrawl vars -> required by issue #8
  *
@@ -21,6 +20,10 @@ import { z } from 'zod';
  *   - X_SCOPES
  *   - TOKEN_ENC_KEY (must base64-decode to exactly 32 bytes)
  *   - SESSION_SECRET (min 32 chars)
+ *
+ * Required as of milestone #5 (BullMQ infra + ScheduleService):
+ *   - REDIS_URL (must be a valid `redis://` or `rediss://` URL;
+ *     `QueueModule` and `ScheduleService` fail hard at boot otherwise)
  *
  * APPWRITE_DATABASE_ID has a default so a fresh checkout boots without
  * having to set it.
@@ -61,7 +64,23 @@ const EnvSchema = z.object({
   APPWRITE_DATABASE_ID: z.string().min(1).default('xreporter'),
 
   // ----- Redis / BullMQ (#5) -----
-  REDIS_URL: z.string().url().optional(),
+  // Restricted to `redis://` and `rediss://` schemes so a misconfigured
+  // value (e.g. an `http://` URL accidentally pasted in) fails at boot
+  // rather than later as a confusing BullMQ / health-ping error.
+  REDIS_URL: z
+    .string()
+    .url()
+    .refine(
+      (value) => {
+        try {
+          const protocol = new URL(value).protocol;
+          return protocol === 'redis:' || protocol === 'rediss:';
+        } catch {
+          return false;
+        }
+      },
+      { message: 'REDIS_URL must use the redis:// or rediss:// scheme' },
+    ),
 
   // ----- X OAuth2 (#3) -----
   X_CLIENT_ID: z.string().min(1),

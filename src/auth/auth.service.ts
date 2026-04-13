@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { decrypt, encrypt } from '../common/crypto';
+import { ScheduleService } from '../schedule/schedule.service';
 import { TokensRepo } from '../tokens/tokens.repo';
 import { UsersRepo } from '../users/users.repo';
 import { signCookieValue, verifyCookieValue } from './cookies';
@@ -141,6 +142,7 @@ export class AuthService {
     private readonly xClient: XOAuthClient,
     private readonly users: UsersRepo,
     private readonly tokens: TokensRepo,
+    private readonly schedule: ScheduleService,
   ) {}
 
   // ──────────────────────────────────────────────────────────────────────
@@ -242,6 +244,31 @@ export class AuthService {
       issuedAt: Date.now(),
     };
     const sessionCookieValue = signCookieValue(sessionPayload, this.config.sessionSecret);
+
+    // 6. Register the user's repeatable jobs (poll-x, build-digest)
+    //    via ScheduleService. This is the LAST step of the callback —
+    //    tokens are already persisted and the session cookie is already
+    //    minted, so if the schedule call throws the caller receives an
+    //    upstream-502 via the controller's existing exception mapping
+    //    (same shape as other upstream dependency failures). A warning
+    //    log fires first so the failure is attributable in structured
+    //    logs before the throw propagates.
+    //
+    //    We deliberately do NOT swallow the error here: a half-wired
+    //    sign-in (tokens persisted but no schedule entry) would silently
+    //    result in a user who never gets polled, which is worse than an
+    //    explicit failure. The next retry of the OAuth flow will either
+    //    re-upsert the schedule entry (no harm done — upsert is
+    //    idempotent) or surface the same scheduler outage again.
+    try {
+      await this.schedule.upsertJobsForUser(user.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `handleCallback: schedule.upsertJobsForUser failed for user ${user.id}: ${message}`,
+      );
+      throw err;
+    }
 
     return {
       userId: user.id,
@@ -388,10 +415,30 @@ export class AuthService {
    * malformed expiresAt). Errors from `setStatus` are swallowed so the
    * caller still receives the typed `AuthExpiredError` — the goal is to
    * stop scheduled polls for this user, not to mask the original failure.
+   *
+   * After a successful status transition we also call
+   * `schedule.removeJobsForUser(userId)` so the BullMQ repeatables stop
+   * firing against a user who can no longer be polled. The removal runs
+   * inside its own try/catch so a queue outage can never mask the
+   * original auth failure — the caller still receives the typed
+   * `AuthExpiredError`, and the removal is logged at `warn` if it
+   * fails. `removeJobsForUser` is itself idempotent (no error if the
+   * scheduler keys do not exist), so running it unconditionally here is
+   * safe even for users that never had repeatables registered.
+   *
+   * The removal is gated on `setStatus` succeeding: if the status
+   * transition itself failed we skip the removal because the user row
+   * is in an indeterminate state — a future retry (same user, same
+   * failure path) will re-attempt both in order. Attempting the
+   * removal anyway would risk a stuck user whose `status` is still
+   * `active` but whose repeatables have been silently drained,
+   * producing a surprising state for operators.
    */
   private async failAuth(userId: string): Promise<void> {
+    let statusUpdated = false;
     try {
       await this.users.setStatus(userId, 'auth_expired');
+      statusUpdated = true;
     } catch (err) {
       // Intentionally do not rethrow — the caller still receives the
       // typed `AuthExpiredError` and the request stops cleanly. But
@@ -403,6 +450,27 @@ export class AuthService {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `failed to set auth_expired for user ${userId}: ${message}`,
+      );
+    }
+
+    if (!statusUpdated) {
+      // Don't touch repeatables until the row is known to be in the
+      // terminal `auth_expired` state. Retries will reconcile both.
+      return;
+    }
+
+    try {
+      await this.schedule.removeJobsForUser(userId);
+    } catch (err) {
+      // Same swallow-and-log policy as `setStatus`: the caller already
+      // holds the typed AuthExpiredError and the user row is already
+      // in the terminal `auth_expired` state. A queue outage here only
+      // means the repeatable entries in Redis are stale; the workers
+      // themselves will skip a user whose row is `auth_expired` (per
+      // the poll-x processor contract arriving in #7).
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `failed to remove schedule entries for user ${userId}: ${message}`,
       );
     }
   }
