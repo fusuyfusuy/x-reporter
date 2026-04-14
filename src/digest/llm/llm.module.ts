@@ -16,6 +16,9 @@ export class LlmModule {
   static forRoot(env: Env): DynamicModule {
     return {
       module: LlmModule,
+      // `global: true` so `DigestGraphModule` (#10) and any future consumer
+      // can inject `LLM_PROVIDER` without re-importing LlmModule.
+      global: true,
       providers: [
         {
           provide: LLM_PROVIDER,
