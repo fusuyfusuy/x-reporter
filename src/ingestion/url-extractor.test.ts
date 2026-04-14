@@ -145,6 +145,75 @@ describe('extractUrls — entities.urls precedence', () => {
   });
 });
 
+describe('extractUrls — edge cases', () => {
+  it('returns [] for empty tweet text with no entities', () => {
+    expect(extractUrls({ text: '' })).toEqual([]);
+  });
+
+  it('returns [] for empty text with an empty entities.urls array (no fallthrough)', () => {
+    // Guards the invariant: even with zero-length entities.urls,
+    // the text-fallback branch is only taken when entities is missing
+    // OR the list is empty — in the empty case we fall through to text
+    // regex, and the empty text yields [].
+    expect(extractUrls({ text: '', entities: { urls: [] } })).toEqual([]);
+  });
+
+  it('preserves query strings and fragments on text-fallback URLs', () => {
+    const result = extractUrls({
+      text: 'see https://example.com/a?b=1&c=2#section and done',
+    });
+    expect(result).toEqual(['https://example.com/a?b=1&c=2#section']);
+  });
+
+  it('preserves query strings and fragments on entities expanded URLs', () => {
+    const result = extractUrls({
+      text: 'ignored',
+      entities: {
+        urls: [
+          {
+            url: 'https://t.co/x',
+            expanded_url: 'https://example.com/path?foo=bar#frag',
+          },
+        ],
+      },
+    });
+    expect(result).toEqual(['https://example.com/path?foo=bar#frag']);
+  });
+
+  it('handles internationalized domain names (percent-encoded)', () => {
+    // IDNs typically arrive percent-encoded (xn-- form or %xx) from X.
+    // The extractor is a pass-through — no URL normalization happens at
+    // this layer beyond t.co filtering + dedupe + sort.
+    const result = extractUrls({
+      text: 'look at https://xn--bcher-kva.example/page and https://example.com/%E4%B8%AD',
+    });
+    expect(result).toEqual([
+      'https://example.com/%E4%B8%AD',
+      'https://xn--bcher-kva.example/page',
+    ]);
+  });
+
+  it('mixes expanded and t.co entries: keeps expanded, drops bare t.co wrappers', () => {
+    // Documented entities branch behavior: when expanded_url is missing
+    // and the raw `url` is a t.co wrapper, the entry is filtered. When
+    // it's expanded, t.co is never surfaced regardless of the raw url.
+    const result = extractUrls({
+      text: 'ignored',
+      entities: {
+        urls: [
+          { url: 'https://t.co/keep', expanded_url: 'https://blog.example.com/a' },
+          { url: 'https://t.co/drop' }, // no expansion → dropped
+          { url: 'https://t.co/also', expanded_url: 'https://news.example.org/b' },
+        ],
+      },
+    });
+    expect(result).toEqual([
+      'https://blog.example.com/a',
+      'https://news.example.org/b',
+    ]);
+  });
+});
+
 describe('extractUrls — determinism', () => {
   it('returns the same result regardless of input order', () => {
     const a = extractUrls({
