@@ -1,0 +1,43 @@
+# docker-compose.yml
+#
+# Local dev stack for x-reporter.
+#
+# This compose file brings up Redis (required by BullMQ / `QueueModule`).
+#
+# Appwrite is intentionally NOT bundled here. Appwrite ships a multi-service
+# compose stack (~15 containers: mariadb, traefik, multiple workers, etc.)
+# that is too heavy to inline and evolves independently. Install Appwrite
+# per the official self-hosting docs:
+#
+#   https://appwrite.io/docs/advanced/self-hosting
+#
+# Or point `APPWRITE_ENDPOINT` at Appwrite Cloud (https://cloud.appwrite.io/v1)
+# and skip self-hosting entirely.
+#
+# Usage:
+#   docker compose up -d        # start Redis
+#   docker compose ps           # check health
+#   docker compose logs -f redis
+#   docker compose down         # stop (volumes persist)
+#   docker compose down -v      # stop + wipe data
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: x-reporter-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  redis-data:
+    name: x-reporter-redis-data
