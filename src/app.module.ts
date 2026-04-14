@@ -6,6 +6,7 @@ import { loadEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { DigestGraphModule } from './digest/graph/digest-graph.module';
 import { LlmModule } from './digest/llm/llm.module';
+import { DigestsModule } from './digests/digests.module';
 import { ExtractionModule } from './extraction/extraction.module';
 import { IngestionModule } from './ingestion/ingestion.module';
 import { QueueModule } from './queue/queue.module';
@@ -72,6 +73,7 @@ export class AppModule {
         WorkersModule.forRoot(env),
         LlmModule.forRoot(env),
         DigestGraphModule,
+        DigestsModule.forRoot(env),
       ],
     };
   }
