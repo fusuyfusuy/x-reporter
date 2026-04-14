@@ -25,6 +25,7 @@ const baseEnv = {
   TOKEN_ENC_KEY: TEST_TOKEN_ENC_KEY,
   SESSION_SECRET: TEST_SESSION_SECRET,
   OPENROUTER_API_KEY: 'sk-or-test-key',
+  FIRECRAWL_API_KEY: 'fc-test-key',
 };
 
 describe('loadEnv', () => {
@@ -237,5 +238,29 @@ describe('loadEnv', () => {
   it('defaults OPENROUTER_MODEL to anthropic/claude-sonnet-4.5', () => {
     const env = loadEnv(baseEnv);
     expect(env.OPENROUTER_MODEL).toBe('anthropic/claude-sonnet-4.5');
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Milestone #8: Firecrawl vars become required
+  // ────────────────────────────────────────────────────────────────────
+
+  it('throws when FIRECRAWL_API_KEY is missing', () => {
+    const { FIRECRAWL_API_KEY: _omit, ...rest } = baseEnv;
+    expect(() => loadEnv(rest)).toThrow(/FIRECRAWL_API_KEY/);
+  });
+
+  it('defaults EXTRACTOR to firecrawl', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.EXTRACTOR).toBe('firecrawl');
+  });
+
+  it('defaults FIRECRAWL_BASE_URL to https://api.firecrawl.dev', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.FIRECRAWL_BASE_URL).toBe('https://api.firecrawl.dev');
+  });
+
+  it('accepts a custom FIRECRAWL_BASE_URL', () => {
+    const env = loadEnv({ ...baseEnv, FIRECRAWL_BASE_URL: 'https://firecrawl.internal' });
+    expect(env.FIRECRAWL_BASE_URL).toBe('https://firecrawl.internal');
   });
 });

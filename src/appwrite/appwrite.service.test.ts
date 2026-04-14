@@ -19,6 +19,8 @@ const baseEnv = {
   OPENROUTER_API_KEY: 'sk-or-test-key',
   OPENROUTER_MODEL: 'anthropic/claude-sonnet-4.5',
   EXTRACTOR: 'firecrawl' as const,
+  FIRECRAWL_API_KEY: 'fc-test-key',
+  FIRECRAWL_BASE_URL: 'https://api.firecrawl.dev',
   POLL_X_CONCURRENCY: 5,
   EXTRACT_ITEM_CONCURRENCY: 10,
   BUILD_DIGEST_CONCURRENCY: 2,
