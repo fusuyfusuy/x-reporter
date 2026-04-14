@@ -57,6 +57,16 @@ const ListDigestsQuerySchema = z
   })
   .strict();
 
+/**
+ * zod schema for the `GET /digests/:id` path parameter. Kept here so the
+ * HTTP boundary validates external input with the same shape the service
+ * expects (non-empty string); callers passing an empty id get
+ * `400 validation_failed` rather than leaking through to the repo.
+ */
+const DigestIdParamSchema = z.object({
+  id: z.string().min(1),
+});
+
 /** Error-envelope helpers — same shape documented in `docs/api.md#errors`. */
 function validationFailedBody(details: unknown): {
   error: { code: string; message: string; details: unknown };
@@ -119,7 +129,11 @@ export class DigestsController {
     @Param('id') id: string,
   ): Promise<DigestDetail> {
     const userId = requireUserId(req);
-    const digest = await this.digests.getById(userId, id);
+    const parsed = DigestIdParamSchema.safeParse({ id });
+    if (!parsed.success) {
+      throw new BadRequestException(validationFailedBody(parsed.error.issues));
+    }
+    const digest = await this.digests.getById(userId, parsed.data.id);
     if (!digest) {
       throw new NotFoundException(notFoundBody('digest not found'));
     }

@@ -123,6 +123,9 @@ describe('DigestsRepo.create', () => {
     const result = await repo.create(BASE_INPUT);
     expect(typeof result.id).toBe('string');
     expect(result.userId).toBe('u1');
+    expect(result.windowStart).toBe('2026-04-05T00:00:00.000Z');
+    expect(result.windowEnd).toBe('2026-04-06T00:00:00.000Z');
+    expect(result.markdown).toBe('## hi');
     expect(result.itemIds).toEqual(['i1', 'i2']);
     expect(result.model).toBe('anthropic/claude-sonnet-4.5');
     expect(result.tokensIn).toBe(10);

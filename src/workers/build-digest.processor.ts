@@ -47,11 +47,30 @@ export interface BuildDigestJob {
  * boundary. Window bounds are optional ISO-8601 strings; when absent
  * the processor falls back to `[now - digestIntervalMin, now]`.
  */
-const BuildDigestJobSchema = z.object({
-  userId: z.string().min(1),
-  windowStart: z.string().datetime().optional(),
-  windowEnd: z.string().datetime().optional(),
-});
+const BuildDigestJobSchema = z
+  .object({
+    userId: z.string().min(1),
+    windowStart: z.string().datetime().optional(),
+    windowEnd: z.string().datetime().optional(),
+  })
+  .superRefine((data, ctx) => {
+    // When both bounds are pinned (e.g. by `run-now` or a test), reject
+    // reversed windows at the boundary. Without this guard the downstream
+    // `findEnrichedInWindow` query silently returns zero items and the
+    // processor logs "no enriched items" — hiding a producer bug as a
+    // missing digest.
+    if (
+      data.windowStart !== undefined &&
+      data.windowEnd !== undefined &&
+      new Date(data.windowStart) >= new Date(data.windowEnd)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['windowStart'],
+        message: 'windowStart must be earlier than windowEnd',
+      });
+    }
+  });
 
 @Injectable()
 export class BuildDigestProcessor {
