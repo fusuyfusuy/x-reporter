@@ -32,8 +32,11 @@ const ClusterSchema = z.object({
   itemIds: z.array(z.string()).min(1),
 });
 
+// Note: we intentionally do not require a non-empty array here — if the LLM
+// returns no clusters, `reconcileClusters` sweeps everything into a single
+// `Misc` cluster so downstream nodes always have at least one group to work on.
 const ClusterResponseSchema = z.object({
-  clusters: z.array(ClusterSchema).min(1),
+  clusters: z.array(ClusterSchema),
 });
 
 function formatItems(items: EnrichedItem[]): string {
@@ -51,7 +54,10 @@ function formatItems(items: EnrichedItem[]): string {
  *   - sweep unassigned ids into a trailing `Misc` cluster
  *   - drop clusters that end up empty after dedup
  */
-function reconcileClusters(raw: Cluster[], items: EnrichedItem[]): Cluster[] {
+function reconcileClusters(
+  raw: Array<{ topic: string; itemIds: string[] }>,
+  items: EnrichedItem[],
+): Cluster[] {
   const assigned = new Set<string>();
   const knownIds = new Set(items.map((i) => i.id));
   const reconciled: Cluster[] = [];
@@ -65,7 +71,11 @@ function reconcileClusters(raw: Cluster[], items: EnrichedItem[]): Cluster[] {
       uniqueIds.push(id);
     }
     if (uniqueIds.length > 0) {
-      reconciled.push({ topic: c.topic, itemIds: uniqueIds });
+      reconciled.push({
+        id: `c${reconciled.length}`,
+        topic: c.topic,
+        itemIds: uniqueIds,
+      });
     }
   }
 
@@ -74,7 +84,11 @@ function reconcileClusters(raw: Cluster[], items: EnrichedItem[]): Cluster[] {
     if (!assigned.has(it.id)) leftovers.push(it.id);
   }
   if (leftovers.length > 0) {
-    reconciled.push({ topic: 'Misc', itemIds: leftovers });
+    reconciled.push({
+      id: `c${reconciled.length}`,
+      topic: 'Misc',
+      itemIds: leftovers,
+    });
   }
 
   return reconciled;

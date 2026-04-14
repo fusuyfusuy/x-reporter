@@ -39,46 +39,53 @@ export interface DigestResult {
 
 /**
  * Router that turns the cluster list into a parallel summarize fanout.
- * Returning `END` directly when there are no clusters lets the graph
- * short-circuit to `rank` (which also handles the empty case).
+ * Each `Send` carries only the items belonging to that cluster (looked up
+ * by id) so we don't pay O(N*M) memory across the fanout. Returning `rank`
+ * directly when there are no clusters lets the graph short-circuit.
  */
 function routeClustersToSummarize(state: DigestState): Send[] | 'rank' {
   const clusters = state.clusters ?? [];
   if (clusters.length === 0) return 'rank';
+  const itemsById = new Map(state.items.map((i) => [i.id, i]));
   return clusters.map(
     (cluster) =>
       new Send('summarize', {
         cluster,
-        items: state.items,
+        items: cluster.itemIds
+          .map((id) => itemsById.get(id))
+          .filter((i): i is (typeof state.items)[number] => i !== undefined),
       } satisfies SummarizePayload),
   );
 }
 
+function buildCompiledGraph(llm: LlmProvider) {
+  const clusterNode = makeClusterNode(llm);
+  const summarizeNode = makeSummarizeNode(llm);
+  const rankNode = makeRankNode(llm);
+  const composeNode = makeComposeNode(llm);
+
+  return new StateGraph(DigestStateAnnotation)
+    .addNode('cluster', clusterNode)
+    .addNode('summarize', summarizeNode)
+    .addNode('rank', rankNode)
+    .addNode('compose', composeNode)
+    .addEdge(START, 'cluster')
+    .addConditionalEdges('cluster', routeClustersToSummarize, ['summarize', 'rank'])
+    .addEdge('summarize', 'rank')
+    .addEdge('rank', 'compose')
+    .addEdge('compose', END)
+    .compile();
+}
+
 export class DigestGraph {
-  constructor(private readonly llm: LlmProvider) {}
+  private readonly app: ReturnType<typeof buildCompiledGraph>;
 
-  private build() {
-    const clusterNode = makeClusterNode(this.llm);
-    const summarizeNode = makeSummarizeNode(this.llm);
-    const rankNode = makeRankNode(this.llm);
-    const composeNode = makeComposeNode(this.llm);
-
-    return new StateGraph(DigestStateAnnotation)
-      .addNode('cluster', clusterNode)
-      .addNode('summarize', summarizeNode)
-      .addNode('rank', rankNode)
-      .addNode('compose', composeNode)
-      .addEdge(START, 'cluster')
-      .addConditionalEdges('cluster', routeClustersToSummarize, ['summarize', 'rank'])
-      .addEdge('summarize', 'rank')
-      .addEdge('rank', 'compose')
-      .addEdge('compose', END)
-      .compile();
+  constructor(private readonly llm: LlmProvider) {
+    this.app = buildCompiledGraph(llm);
   }
 
   async run(input: DigestInput): Promise<DigestResult> {
-    const app = this.build();
-    const final = (await app.invoke({
+    const final = (await this.app.invoke({
       userId: input.userId,
       window: input.window,
       items: input.items,

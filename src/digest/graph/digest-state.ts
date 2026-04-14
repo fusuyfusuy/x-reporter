@@ -29,11 +29,15 @@ export interface EnrichedItem {
 }
 
 export interface Cluster {
+  /** Stable identifier assigned by the cluster node (e.g. position-based). */
+  id: string;
   topic: string;
   itemIds: string[];
 }
 
 export interface ClusterSummary {
+  /** Stable identifier copied from the source `Cluster`. */
+  id: string;
   topic: string;
   itemIds: string[];
   summary: string;

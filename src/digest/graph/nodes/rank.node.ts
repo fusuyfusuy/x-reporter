@@ -15,12 +15,12 @@ export const RANK_SYSTEM_PROMPT =
 
 export const RANK_USER_PROMPT = `Score each cluster from 1 to 10 on newsworthiness and signal density.
 Higher scores mean the reader will get more value from reading it. Do not
-deduplicate or rewrite — just score.
+deduplicate or rewrite — just score. Echo back the exact cluster id.
 
 Return JSON of the form:
 {
   "scores": [
-    { "topic": "exact topic label", "score": 8 }
+    { "id": "c0", "score": 8 }
   ]
 }
 
@@ -28,12 +28,12 @@ Clusters:
 `;
 
 const RankResponseSchema = z.object({
-  scores: z.array(z.object({ topic: z.string(), score: z.number() })),
+  scores: z.array(z.object({ id: z.string(), score: z.number() })),
 });
 
 function formatSummaries(summaries: ClusterSummary[]): string {
   return summaries
-    .map((s) => `- ${s.topic}: ${s.summary}`)
+    .map((s) => `- id=${s.id} topic="${s.topic}": ${s.summary}`)
     .join('\n');
 }
 
@@ -57,13 +57,13 @@ export function makeRankNode(llm: LlmProvider) {
     });
 
     const parsed = RankResponseSchema.parse(JSON.parse(result.content));
-    const scoreByTopic = new Map<string, number>();
+    const scoreById = new Map<string, number>();
     for (const s of parsed.scores) {
-      if (!scoreByTopic.has(s.topic)) scoreByTopic.set(s.topic, s.score);
+      if (!scoreById.has(s.id)) scoreById.set(s.id, s.score);
     }
 
     const ranked = summaries
-      .map((s) => ({ ...s, score: scoreByTopic.get(s.topic) ?? 0 }))
+      .map((s) => ({ ...s, score: scoreById.get(s.id) ?? 0 }))
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
     return {

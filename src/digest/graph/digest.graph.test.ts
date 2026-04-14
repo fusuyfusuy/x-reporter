@@ -65,7 +65,7 @@ describe('DigestGraph', () => {
           respond: () =>
             JSON.stringify({
               summary: 'LangGraph 1.0 landed with a new annotation API.',
-              highlights: ['Revamped state', 'Send fanout'],
+              highlights: ['Revamped state', 'Send fanout', 'Reducers'],
             }),
           usage: { tokensIn: 40, tokensOut: 15 },
         },
@@ -75,7 +75,7 @@ describe('DigestGraph', () => {
           respond: () =>
             JSON.stringify({
               summary: 'Bun 1.3 and NestJS 11 both push the runtime frontier.',
-              highlights: ['Bun Node compat', 'Nest DI perf'],
+              highlights: ['Bun Node compat', 'Nest DI perf', 'Perf gains'],
             }),
           usage: { tokensIn: 45, tokensOut: 18 },
         },
@@ -85,8 +85,8 @@ describe('DigestGraph', () => {
           respond: () =>
             JSON.stringify({
               scores: [
-                { topic: 'LangGraph', score: 9 },
-                { topic: 'Runtimes', score: 6 },
+                { id: 'c0', score: 9 },
+                { id: 'c1', score: 6 },
               ],
             }),
           usage: { tokensIn: 30, tokensOut: 12 },
@@ -136,12 +136,18 @@ describe('DigestGraph', () => {
         {
           match: (opts) => opts.messages[0]?.content.includes('Topic: Primary') ?? false,
           respond: () =>
-            JSON.stringify({ summary: 'Primary cluster.', highlights: ['point'] }),
+            JSON.stringify({
+              summary: 'Primary cluster.',
+              highlights: ['point a', 'point b', 'point c'],
+            }),
         },
         {
           match: (opts) => opts.messages[0]?.content.includes('Topic: Misc') ?? false,
           respond: () =>
-            JSON.stringify({ summary: 'Misc cluster.', highlights: ['leftover'] }),
+            JSON.stringify({
+              summary: 'Misc cluster.',
+              highlights: ['leftover a', 'leftover b', 'leftover c'],
+            }),
         },
         {
           match: (opts) =>
@@ -149,15 +155,26 @@ describe('DigestGraph', () => {
           respond: () =>
             JSON.stringify({
               scores: [
-                { topic: 'Primary', score: 8 },
-                { topic: 'Misc', score: 3 },
+                { id: 'c0', score: 8 },
+                { id: 'c1', score: 3 },
               ],
             }),
         },
         {
+          // Compose stub echoes back cluster topics from its input so we can
+          // prove the Misc cluster actually reaches the final digest rather
+          // than being filtered out somewhere upstream.
           match: (opts) =>
             opts.messages[0]?.content.includes('Compose a personalized digest') ?? false,
-          respond: () => '## Primary\n\nPrimary cluster.\n',
+          respond: (opts) => {
+            const prompt = opts.messages[0]?.content ?? '';
+            const topics: string[] = [];
+            for (const match of prompt.matchAll(/###\s+\d+\.\s+([^\n(]+?)\s*\(/g)) {
+              const topic = match[1];
+              if (topic) topics.push(topic.trim());
+            }
+            return topics.map((t) => `## ${t}\n\n${t} body.\n`).join('\n');
+          },
         },
       ],
     });
@@ -170,6 +187,8 @@ describe('DigestGraph', () => {
     });
 
     expect(result.markdown).toContain('## Primary');
+    expect(result.markdown).toContain('## Misc');
+    expect(result.markdown).toContain('Misc body.');
     // cluster + 2 summarize + rank + compose = 5
     expect(stub.calls).toHaveLength(5);
   });
