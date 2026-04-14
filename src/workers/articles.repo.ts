@@ -56,10 +56,12 @@ export class ArticlesRepo {
    * resolves without throwing — re-running the extractor for the same
    * URL should be idempotent.
    *
-   * There is no compound unique index on `(itemId, url)` today; the
-   * fallback is a listDocuments dedup probe done before insert, which
-   * is cheap in v1 (at most a few URLs per item). A future schema
-   * change can tighten this to a DB-level unique constraint.
+   * The `articles.itemId_url_unique` compound unique index defined in
+   * `scripts/setup-appwrite.ts` enforces this at the DB layer. The
+   * pre-insert `findByItemIdAndUrl` probe is kept as a fast path that
+   * avoids a guaranteed-409 round-trip in the common (non-racing) case;
+   * concurrent writers still hit the unique index and fall through to
+   * the re-query branch below.
    */
   async create(itemId: string, article: ExtractedArticle): Promise<ArticleRecord> {
     const existing = await this.findByItemIdAndUrl(itemId, article.url);

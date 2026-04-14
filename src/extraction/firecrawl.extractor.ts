@@ -108,7 +108,7 @@ export class FirecrawlExtractor implements ArticleExtractor {
   }
 
   async extract(url: string): Promise<ExtractedArticle> {
-    if (!url) {
+    if (!url || !url.trim()) {
       throw new Error('FirecrawlExtractor.extract called with empty url');
     }
 

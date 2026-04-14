@@ -197,6 +197,35 @@ describe('ExtractItemProcessor.process', () => {
     expect(items.enriched).toHaveLength(0);
   });
 
+  it('skips without throwing or calling the extractor when the payload is malformed', async () => {
+    const { processor, extractor, items, articles, logger } = makeProcessor();
+
+    // Missing itemId — zod should reject this at the worker boundary.
+    await processor.process({
+      data: { userId: 'user-1' } as unknown,
+      attemptsMade: 0,
+    });
+    // Completely wrong shape.
+    await processor.process({
+      data: null as unknown,
+      attemptsMade: 0,
+    });
+    // Empty string fields fail `z.string().min(1)`.
+    await processor.process({
+      data: { userId: '', itemId: '' } as unknown,
+      attemptsMade: 0,
+    });
+
+    expect(extractor.calls).toHaveLength(0);
+    expect(articles.persisted).toHaveLength(0);
+    expect(items.enriched).toHaveLength(0);
+    expect(
+      logger.logs.filter(
+        (l) => l.level === 'warn' && l.msg.includes('invalid job payload'),
+      ),
+    ).toHaveLength(3);
+  });
+
   it('rethrows the FIRST failure when all URLs fail', async () => {
     const { processor, extractor, items } = makeProcessor();
     const item = makeItem({ urls: ['https://a.test', 'https://b.test'] });

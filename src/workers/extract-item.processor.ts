@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { z } from 'zod';
 import type { ArticleExtractor } from '../extraction/article-extractor.port';
 import { ARTICLE_EXTRACTOR } from '../extraction/extraction.module';
 import { ArticlesRepo } from './articles.repo';
@@ -24,9 +25,19 @@ import { ItemsRepo } from './items.repo';
 
 /** Minimal job shape — no BullMQ types in the public interface. */
 export interface ExtractItemJob {
-  data: { userId: string; itemId: string };
+  data: unknown;
   attemptsMade: number;
 }
+
+/**
+ * Zod schema validating the `extract-item` job payload at the worker
+ * boundary. Malformed payloads are non-recoverable (retrying won't fix a
+ * missing field), so the processor logs and returns rather than throwing.
+ */
+const ExtractItemJobSchema = z.object({
+  userId: z.string().min(1),
+  itemId: z.string().min(1),
+});
 
 @Injectable()
 export class ExtractItemProcessor {
@@ -39,7 +50,18 @@ export class ExtractItemProcessor {
   ) {}
 
   async process(job: ExtractItemJob): Promise<void> {
-    const { userId, itemId } = job.data;
+    const parsed = ExtractItemJobSchema.safeParse(job.data);
+    if (!parsed.success) {
+      // Malformed payloads are not recoverable — don't throw (which
+      // would trigger a retry). Log and return so BullMQ considers the
+      // job done.
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; ');
+      this.logger.warn(`skipping extract: invalid job payload — ${issues}`);
+      return;
+    }
+    const { userId, itemId } = parsed.data;
     const start = Date.now();
 
     const item = await this.items.findById(itemId);

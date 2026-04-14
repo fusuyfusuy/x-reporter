@@ -105,6 +105,64 @@ describe('ArticlesRepo.create', () => {
     expect(db.docs.size).toBe(1);
   });
 
+  it('recovers from a 409 conflict by re-querying for the concurrent winner', async () => {
+    // This exercises the `catch (isConflict)` branch in ArticlesRepo.create:
+    // the pre-check misses (empty DB at first list), createDocument throws
+    // 409 as a concurrent writer wins the race, and the repo re-queries
+    // listDocuments to return that winner.
+    const { repo, db } = makeRepo();
+    db.conflictMode = 'once';
+
+    // The second listDocuments call should find the winner. We simulate
+    // the concurrent writer by inserting the winner row just before the
+    // conflicting createDocument call fires — easiest way: hook the fake
+    // so the first createDocument call also seeds the winner as a side
+    // effect of throwing.
+    const originalCreate = db.createDocument.bind(db);
+    db.createDocument = async (params) => {
+      // On the first call (which will throw 409) seed the winner row so
+      // the post-conflict re-query can find it.
+      if (!db.docs.has('race-winner')) {
+        db.docs.set('race-winner', {
+          $id: 'race-winner',
+          itemId: 'item-1',
+          url: 'https://a.test',
+          content: 'winner',
+          extractor: 'firecrawl',
+          extractedAt: new Date().toISOString(),
+        });
+      }
+      return originalCreate(params);
+    };
+
+    const result = await repo.create('item-1', {
+      url: 'https://a.test',
+      content: 'loser',
+      extractor: 'firecrawl',
+    });
+
+    expect(result.id).toBe('race-winner');
+    expect(result.content).toBe('winner');
+    // Exactly one row — the winner — not the loser's attempted write.
+    expect(db.docs.size).toBe(1);
+  });
+
+  it('rethrows the 409 when the post-conflict re-query still finds no winner', async () => {
+    // Defensive branch: if the DB really has no matching row after a 409,
+    // the caller needs to see the original error rather than silently
+    // returning null.
+    const { repo, db } = makeRepo();
+    db.conflictMode = 'once';
+
+    await expect(
+      repo.create('item-1', {
+        url: 'https://a.test',
+        content: 'body',
+        extractor: 'firecrawl',
+      }),
+    ).rejects.toThrow(/document already exists/);
+  });
+
   it('stores optional metadata fields when provided', async () => {
     const { repo, db } = makeRepo();
     const result = await repo.create('item-1', {

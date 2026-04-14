@@ -182,4 +182,13 @@ describe('FirecrawlExtractor.extract', () => {
     const extractor = new FirecrawlExtractor({ apiKey: 'k' }, fetchImpl);
     await expect(extractor.extract('')).rejects.toThrow(/empty url/);
   });
+
+  it('rejects a whitespace-only url argument without making a network call', async () => {
+    const { fetchImpl, calls } = makeFetch(() =>
+      makeResponse({ body: { success: true, data: { markdown: 'hi' } } }),
+    );
+    const extractor = new FirecrawlExtractor({ apiKey: 'k' }, fetchImpl);
+    await expect(extractor.extract('   \t\n ')).rejects.toThrow(/empty url/);
+    expect(calls).toHaveLength(0);
+  });
 });
