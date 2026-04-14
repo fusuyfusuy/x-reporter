@@ -192,4 +192,108 @@ describe('DigestGraph', () => {
     // cluster + 2 summarize + rank + compose = 5
     expect(stub.calls).toHaveLength(5);
   });
+
+  it('orders compose input by rank score, descending, regardless of cluster order', async () => {
+    // This pins the rank-node ordering contract: even when the cluster
+    // node produces [High, Low] order, a low score for `High` + high
+    // score for `Low` should flip the order when compose receives the
+    // ranked list. The compose stub captures the prompt so we can
+    // inspect the prefix/position of each cluster in the input.
+    let capturedComposePrompt = '';
+    const stub = new StubLlmProvider({
+      handlers: [
+        {
+          match: (opts) =>
+            opts.messages[0]?.content.includes('Group the following items') ?? false,
+          respond: () =>
+            JSON.stringify({
+              clusters: [
+                { topic: 'Alpha', itemIds: ['i1'] },
+                { topic: 'Bravo', itemIds: ['i2'] },
+                { topic: 'Charlie', itemIds: ['i3'] },
+              ],
+            }),
+        },
+        {
+          match: (opts) => opts.messages[0]?.content.includes('Topic: Alpha') ?? false,
+          respond: () =>
+            JSON.stringify({
+              summary: 'Alpha summary.',
+              highlights: ['a1', 'a2', 'a3'],
+            }),
+        },
+        {
+          match: (opts) => opts.messages[0]?.content.includes('Topic: Bravo') ?? false,
+          respond: () =>
+            JSON.stringify({
+              summary: 'Bravo summary.',
+              highlights: ['b1', 'b2', 'b3'],
+            }),
+        },
+        {
+          match: (opts) => opts.messages[0]?.content.includes('Topic: Charlie') ?? false,
+          respond: () =>
+            JSON.stringify({
+              summary: 'Charlie summary.',
+              highlights: ['c1', 'c2', 'c3'],
+            }),
+        },
+        {
+          match: (opts) => opts.messages[0]?.content.includes('Score each cluster') ?? false,
+          // Invert: Alpha=2, Bravo=9, Charlie=5 → expected ranked order Bravo, Charlie, Alpha
+          respond: () =>
+            JSON.stringify({
+              scores: [
+                { id: 'c0', score: 2 },
+                { id: 'c1', score: 9 },
+                { id: 'c2', score: 5 },
+              ],
+            }),
+        },
+        {
+          match: (opts) =>
+            opts.messages[0]?.content.includes('Compose a personalized digest') ?? false,
+          respond: (opts) => {
+            capturedComposePrompt = opts.messages[0]?.content ?? '';
+            // Emit minimal markdown that matches ordering so we can
+            // also verify the result.markdown surfaces that order.
+            return '## Bravo\n\nBravo body.\n\n## Charlie\n\nCharlie body.\n\n## Alpha\n\nAlpha body.\n';
+          },
+        },
+      ],
+    });
+
+    const graph = new DigestGraph(stub);
+    const result = await graph.run({
+      userId: 'u',
+      window: { start: new Date(), end: new Date() },
+      items: makeItems(),
+    });
+
+    // The compose prompt lists clusters using "### N. Topic (score=..." —
+    // verify the positional ordering matches rank-descending.
+    const bravoIdx = capturedComposePrompt.indexOf('### 1. Bravo');
+    const charlieIdx = capturedComposePrompt.indexOf('### 2. Charlie');
+    const alphaIdx = capturedComposePrompt.indexOf('### 3. Alpha');
+    expect(bravoIdx).toBeGreaterThanOrEqual(0);
+    expect(charlieIdx).toBeGreaterThan(bravoIdx);
+    expect(alphaIdx).toBeGreaterThan(charlieIdx);
+    // Scores surface in the prompt too.
+    expect(capturedComposePrompt).toContain('(score=9)');
+    expect(capturedComposePrompt).toContain('(score=5)');
+    expect(capturedComposePrompt).toContain('(score=2)');
+
+    // Final markdown reflects rank ordering: Bravo, then Charlie, then Alpha.
+    const mdBravoIdx = result.markdown.indexOf('## Bravo');
+    const mdCharlieIdx = result.markdown.indexOf('## Charlie');
+    const mdAlphaIdx = result.markdown.indexOf('## Alpha');
+    expect(mdBravoIdx).toBeGreaterThanOrEqual(0);
+    expect(mdCharlieIdx).toBeGreaterThan(mdBravoIdx);
+    expect(mdAlphaIdx).toBeGreaterThan(mdCharlieIdx);
+
+    // All three items still surface on the result.
+    expect(result.itemIds).toEqual(['i1', 'i2', 'i3']);
+    // cluster + 3 summarize + rank + compose = 6 calls
+    expect(stub.calls).toHaveLength(6);
+  });
 });
