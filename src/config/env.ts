@@ -3,9 +3,8 @@ import { z } from 'zod';
 /**
  * The full env schema for x-reporter.
  *
- * Several fields are still optional in this milestone and will be
- * tightened to required as their owning milestones land:
- *   - Firecrawl vars -> required by issue #8
+ * Required as of milestone #8 (ArticleExtractor + Firecrawl):
+ *   - FIRECRAWL_API_KEY
  *
  * Required as of milestone #9 (LlmProvider):
  *   - OPENROUTER_API_KEY
@@ -97,7 +96,14 @@ const EnvSchema = z.object({
 
   // ----- Article extractor (#8) -----
   EXTRACTOR: z.enum(['firecrawl']).default('firecrawl'),
-  FIRECRAWL_API_KEY: z.string().min(1).optional(),
+  FIRECRAWL_API_KEY: z.string().min(1),
+  /**
+   * Firecrawl API base URL. Defaults to the public SaaS endpoint. Kept
+   * as an env var so self-hosted Firecrawl deployments can override it
+   * without code changes, and so tests can point the adapter at a local
+   * mock server.
+   */
+  FIRECRAWL_BASE_URL: z.string().url().default('https://api.firecrawl.dev'),
 
   // ----- Crypto / sessions (#3) -----
   TOKEN_ENC_KEY: base64Key32,

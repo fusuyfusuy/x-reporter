@@ -27,6 +27,17 @@ interface ItemsDatabases {
     collectionId: string;
     queries?: string[];
   }): Promise<{ total: number; documents: Array<Record<string, unknown> & { $id: string }> }>;
+  getDocument(params: {
+    databaseId: string;
+    collectionId: string;
+    documentId: string;
+  }): Promise<Record<string, unknown> & { $id: string }>;
+  updateDocument(params: {
+    databaseId: string;
+    collectionId: string;
+    documentId: string;
+    data: Record<string, unknown>;
+  }): Promise<Record<string, unknown> & { $id: string }>;
 }
 
 const COLLECTION_ID = 'items';
@@ -82,6 +93,36 @@ export class ItemsRepo {
     return results;
   }
 
+  /** Lookup by Appwrite document id. Returns `null` on 404. */
+  async findById(itemId: string): Promise<ItemRecord | null> {
+    try {
+      const doc = await this.db.getDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId: itemId,
+      });
+      return toItemRecord(doc);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Mark an item as enriched — called by the extract-item processor
+   * after all URLs for the item have been extracted (or failed in a
+   * way that the processor chose to accept). Writes only the
+   * `enriched` field; other attributes are untouched.
+   */
+  async setEnriched(itemId: string): Promise<void> {
+    await this.db.updateDocument({
+      databaseId: this.databaseId,
+      collectionId: COLLECTION_ID,
+      documentId: itemId,
+      data: { enriched: true },
+    });
+  }
+
   /** Query by compound key. Returns `null` on miss. */
   async findByUserAndTweetId(
     userId: string,
@@ -101,6 +142,11 @@ function isConflict(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as { code?: number; type?: string };
   return e.code === 409 || e.type === 'document_already_exists';
+}
+
+function isNotFound(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { code?: number }).code === 404;
 }
 
 function toItemRecord(doc: Record<string, unknown> & { $id: string }): ItemRecord {

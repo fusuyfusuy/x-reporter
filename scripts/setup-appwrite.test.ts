@@ -356,6 +356,15 @@ describe('runSetup', () => {
     ).rejects.toThrow(/users.*still not available.*xUserId/s);
   });
 
+  it('articles collection has a compound unique index on (itemId, url)', async () => {
+    const fake = new FakeAppwrite();
+    await runSetup({ client: fake, ...env, logger: silentLogger });
+    const articles = fake.collections.get(`${env.databaseId}/articles`);
+    const idx = articles?.indexes.get('itemId_url_unique');
+    expect(idx?.type).toBe('unique');
+    expect(idx?.attributes).toEqual(['itemId', 'url']);
+  });
+
   it('digests collection has userId+createdAt desc index', async () => {
     const fake = new FakeAppwrite();
     await runSetup({ client: fake, ...env, logger: silentLogger });

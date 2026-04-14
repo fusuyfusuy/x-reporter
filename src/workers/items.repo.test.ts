@@ -10,6 +10,37 @@ class FakeDatabases {
   readonly docs = new Map<string, Record<string, unknown> & { $id: string }>();
   private nextId = 1;
 
+  async getDocument(params: {
+    databaseId: string;
+    collectionId: string;
+    documentId: string;
+  }): Promise<Record<string, unknown> & { $id: string }> {
+    const doc = this.docs.get(params.documentId);
+    if (!doc) {
+      const err = new Error('not found') as Error & { code: number };
+      err.code = 404;
+      throw err;
+    }
+    return doc;
+  }
+
+  async updateDocument(params: {
+    databaseId: string;
+    collectionId: string;
+    documentId: string;
+    data: Record<string, unknown>;
+  }): Promise<Record<string, unknown> & { $id: string }> {
+    const existing = this.docs.get(params.documentId);
+    if (!existing) {
+      const err = new Error('not found') as Error & { code: number };
+      err.code = 404;
+      throw err;
+    }
+    const updated = { ...existing, ...params.data };
+    this.docs.set(params.documentId, updated);
+    return updated;
+  }
+
   async createDocument(params: {
     databaseId: string;
     collectionId: string;
@@ -150,6 +181,40 @@ describe('ItemsRepo.upsertMany', () => {
     const { repo } = makeRepo();
     const results = await repo.upsertMany('user1', []);
     expect(results).toHaveLength(0);
+  });
+
+  it('findById returns a parsed ItemRecord for an existing id', async () => {
+    const { repo } = makeRepo();
+    const results = await repo.upsertMany('user1', [
+      { tweetId: 't1', text: 'a', authorHandle: 'a', urls: ['https://x.test'], kind: 'like' },
+    ]);
+    const id = results[0]!.id;
+    const found = await repo.findById(id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(id);
+    expect(found!.userId).toBe('user1');
+    expect(found!.xTweetId).toBe('t1');
+    expect(found!.urls).toEqual(['https://x.test']);
+    expect(found!.enriched).toBe(false);
+  });
+
+  it('findById returns null for a missing id', async () => {
+    const { repo } = makeRepo();
+    const found = await repo.findById('nope');
+    expect(found).toBeNull();
+  });
+
+  it('setEnriched flips the enriched flag to true', async () => {
+    const { repo, db } = makeRepo();
+    const results = await repo.upsertMany('user1', [
+      { tweetId: 't1', text: 'a', authorHandle: 'a', urls: [], kind: 'like' },
+    ]);
+    const id = results[0]!.id;
+    expect(db.docs.get(id)!.enriched).toBe(false);
+    await repo.setEnriched(id);
+    expect(db.docs.get(id)!.enriched).toBe(true);
+    const reread = await repo.findById(id);
+    expect(reread!.enriched).toBe(true);
   });
 
   it('allows the same tweetId for different users', async () => {

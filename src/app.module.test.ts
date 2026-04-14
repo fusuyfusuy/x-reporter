@@ -137,6 +137,9 @@ describe('AppModule (e2e-lite)', () => {
     // be real — `LlmModule.forRoot` constructs the adapter lazily and no
     // test in this e2e-lite suite calls the LLM.
     process.env.OPENROUTER_API_KEY = 'test_openrouter_key';
+    // Firecrawl vars are required as of milestone #8. The FirecrawlExtractor
+    // is constructed lazily and no HTTP call is made during e2e-lite.
+    process.env.FIRECRAWL_API_KEY = 'test_firecrawl_key';
 
     const { AppwriteService } = await import('./appwrite/appwrite.service');
 

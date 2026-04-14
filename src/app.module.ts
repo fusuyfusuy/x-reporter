@@ -5,6 +5,7 @@ import { LoggerModule } from './common/logger';
 import { loadEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { LlmModule } from './digest/llm/llm.module';
+import { ExtractionModule } from './extraction/extraction.module';
 import { IngestionModule } from './ingestion/ingestion.module';
 import { QueueModule } from './queue/queue.module';
 import { ScheduleModule } from './schedule/schedule.module';
@@ -66,6 +67,7 @@ export class AppModule {
         AuthModule.forRoot(env),
         UsersModule.forRoot(env),
         IngestionModule.forRoot(env),
+        ExtractionModule.forRoot(env),
         WorkersModule.forRoot(env),
         LlmModule.forRoot(env),
       ],

@@ -215,6 +215,11 @@ export const COLLECTIONS: CollectionSpec[] = [
     indexes: [
       { key: 'itemId_key', type: 'key', attributes: ['itemId'] },
       { key: 'canonicalUrl_key', type: 'key', attributes: ['canonicalUrl'] },
+      // Compound unique index that backs `ArticlesRepo.create`'s 409
+      // recovery branch: a concurrent writer racing on the same
+      // (itemId, url) pair will trip this constraint and the repo will
+      // re-query for the winner.
+      { key: 'itemId_url_unique', type: 'unique', attributes: ['itemId', 'url'] },
     ],
   },
   {
