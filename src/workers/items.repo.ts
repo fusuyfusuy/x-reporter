@@ -42,6 +42,19 @@ interface ItemsDatabases {
 
 const COLLECTION_ID = 'items';
 
+/**
+ * Hard cap on the number of items a single digest window pulls back.
+ * The `build-digest` processor feeds the result into `DigestGraph`,
+ * which tokenises every article body; an unbounded scan would let one
+ * pathological user (or a misconfigured cadence) produce prompts
+ * large enough to blow the LLM context window. 500 is well above the
+ * largest digest we expect in practice (the default daily cadence
+ * caps at whatever a user can plausibly like in 24h) while still
+ * fitting comfortably under every adapter's list-documents paging
+ * limit.
+ */
+const MAX_WINDOW_ITEMS = 500;
+
 @Injectable()
 export class ItemsRepo {
   private readonly databaseId: string;
@@ -121,6 +134,37 @@ export class ItemsRepo {
       documentId: itemId,
       data: { enriched: true },
     });
+  }
+
+  /**
+   * List enriched items for a user whose `fetchedAt` falls in the
+   * half-open window `[start, end)`. Ordered oldest-first so the
+   * downstream digest graph sees items in the sequence they were
+   * ingested.
+   *
+   * Used by `BuildDigestProcessor` to gather the source set for a
+   * digest window. The `(userId, fetchedAt desc)` and
+   * `(userId, enriched)` indexes declared in
+   * `scripts/setup-appwrite.ts` back the scan.
+   */
+  async findEnrichedInWindow(
+    userId: string,
+    start: Date,
+    end: Date,
+  ): Promise<ItemRecord[]> {
+    const result = await this.db.listDocuments({
+      databaseId: this.databaseId,
+      collectionId: COLLECTION_ID,
+      queries: [
+        Query.equal('userId', userId),
+        Query.equal('enriched', true),
+        Query.greaterThanEqual('fetchedAt', start.toISOString()),
+        Query.lessThan('fetchedAt', end.toISOString()),
+        Query.orderAsc('fetchedAt'),
+        Query.limit(MAX_WINDOW_ITEMS),
+      ],
+    });
+    return result.documents.map(toItemRecord);
   }
 
   /** Query by compound key. Returns `null` on miss. */

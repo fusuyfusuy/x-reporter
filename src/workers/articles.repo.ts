@@ -39,6 +39,9 @@ interface ArticlesDatabases {
 
 const COLLECTION_ID = 'articles';
 
+/** Max ids per `Query.equal('itemId', [...])` batch in `findByItemIds`. */
+const ITEM_ID_CHUNK_SIZE = 100;
+
 @Injectable()
 export class ArticlesRepo {
   private readonly databaseId: string;
@@ -95,6 +98,38 @@ export class ArticlesRepo {
       if (!winner) throw err;
       return winner;
     }
+  }
+
+  /**
+   * Load every article row whose `itemId` is in the given set. Returns
+   * an empty array when the input list is empty — callers don't have
+   * to guard against the "no items in window" branch themselves.
+   *
+   * Used by `BuildDigestProcessor` to hydrate the enriched items it
+   * pulled from `ItemsRepo.findEnrichedInWindow` with their extracted
+   * article bodies before handing them to `DigestGraph`. The
+   * `itemId_key` index declared in `scripts/setup-appwrite.ts` backs
+   * each equality query.
+   *
+   * The query is chunked because Appwrite's `Query.equal(attr, values)`
+   * accepts a bounded-size `values` array. 100 ids per request is
+   * comfortably under the SDK's limit and keeps a single digest
+   * window fitting inside a few round-trips even at the
+   * `MAX_WINDOW_ITEMS` ceiling in `ItemsRepo`.
+   */
+  async findByItemIds(itemIds: readonly string[]): Promise<ArticleRecord[]> {
+    if (itemIds.length === 0) return [];
+    const results: ArticleRecord[] = [];
+    for (let i = 0; i < itemIds.length; i += ITEM_ID_CHUNK_SIZE) {
+      const chunk = itemIds.slice(i, i + ITEM_ID_CHUNK_SIZE);
+      const page = await this.db.listDocuments({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        queries: [Query.equal('itemId', chunk as string[])],
+      });
+      for (const doc of page.documents) results.push(toArticleRecord(doc));
+    }
+    return results;
   }
 
   async findByItemIdAndUrl(itemId: string, url: string): Promise<ArticleRecord | null> {
