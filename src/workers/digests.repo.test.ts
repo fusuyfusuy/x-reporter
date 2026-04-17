@@ -151,6 +151,19 @@ describe('DigestsRepo.create', () => {
     const b = await repo2.create(BASE_INPUT);
     expect(a.id).toBe(b.id);
   });
+
+  it('treats type=document_already_exists (without code) as idempotent success', async () => {
+    const { repo, db } = makeRepo();
+    const first = await repo.create(BASE_INPUT);
+    db.createDocument = (async () => {
+      const err = new Error('Document already exists') as Error & { type: string };
+      err.type = 'document_already_exists';
+      throw err;
+    }) as FakeDatabases['createDocument'];
+    const second = await repo.create({ ...BASE_INPUT, markdown: '## different' });
+    expect(second.id).toBe(first.id);
+    expect(second.markdown).toBe('## hi');
+  });
 });
 
 describe('DigestsRepo.findByIdAndUser', () => {
