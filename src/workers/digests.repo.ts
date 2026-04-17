@@ -91,7 +91,7 @@ export class DigestsRepo {
    * the digest already exists and is treated as success.
    */
   async create(input: CreateDigestInput): Promise<DigestRecord> {
-    const documentId = await digestDocumentId(input.userId, input.windowStart, input.windowEnd);
+    const documentId = digestDocumentId(input.userId, input.windowStart, input.windowEnd);
     const createdAt = new Date().toISOString();
     try {
       const created = await this.db.createDocument({
@@ -185,14 +185,11 @@ function isNotFound(err: unknown): boolean {
 
 function isConflict(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  return (err as { code?: number }).code === 409;
+  const e = err as { code?: number; type?: string };
+  return e.code === 409 || e.type === 'document_already_exists';
 }
 
-async function digestDocumentId(
-  userId: string,
-  windowStart: string,
-  windowEnd: string,
-): Promise<string> {
+function digestDocumentId(userId: string, windowStart: string, windowEnd: string): string {
   const hasher = new Bun.CryptoHasher('sha256');
   hasher.update(`${userId}|${windowStart}|${windowEnd}`);
   return hasher.digest('hex').slice(0, 32);
