@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ID, Query } from 'node-appwrite';
+import { Query } from 'node-appwrite';
 import { AppwriteService } from '../appwrite/appwrite.service';
 
 /**
@@ -84,26 +84,44 @@ export class DigestsRepo {
     this.db = appwrite.databases as unknown as DigestsDatabases;
   }
 
-  /** Persist one digest row and return the parsed record. */
+  /**
+   * Persist one digest row and return the parsed record.
+   * Uses a deterministic document ID derived from (userId, windowStart,
+   * windowEnd) so BullMQ retries are idempotent — a 409 conflict means
+   * the digest already exists and is treated as success.
+   */
   async create(input: CreateDigestInput): Promise<DigestRecord> {
+    const documentId = digestDocumentId(input.userId, input.windowStart, input.windowEnd);
     const createdAt = new Date().toISOString();
-    const created = await this.db.createDocument({
-      databaseId: this.databaseId,
-      collectionId: COLLECTION_ID,
-      documentId: ID.unique(),
-      data: {
-        userId: input.userId,
-        windowStart: input.windowStart,
-        windowEnd: input.windowEnd,
-        markdown: input.markdown,
-        itemIds: input.itemIds,
-        model: input.model,
-        tokensIn: input.tokensIn,
-        tokensOut: input.tokensOut,
-        createdAt,
-      },
-    });
-    return toDigestRecord(created);
+    try {
+      const created = await this.db.createDocument({
+        databaseId: this.databaseId,
+        collectionId: COLLECTION_ID,
+        documentId,
+        data: {
+          userId: input.userId,
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          markdown: input.markdown,
+          itemIds: input.itemIds,
+          model: input.model,
+          tokensIn: input.tokensIn,
+          tokensOut: input.tokensOut,
+          createdAt,
+        },
+      });
+      return toDigestRecord(created);
+    } catch (err) {
+      if (isConflict(err)) {
+        const existing = await this.db.getDocument({
+          databaseId: this.databaseId,
+          collectionId: COLLECTION_ID,
+          documentId,
+        });
+        return toDigestRecord(existing);
+      }
+      throw err;
+    }
   }
 
   /**
@@ -112,10 +130,7 @@ export class DigestsRepo {
    * else — the controller collapses both to a 404 so callers cannot
    * probe for other users' digest ids.
    */
-  async findByIdAndUser(
-    digestId: string,
-    userId: string,
-  ): Promise<DigestRecord | null> {
+  async findByIdAndUser(digestId: string, userId: string): Promise<DigestRecord | null> {
     try {
       const doc = await this.db.getDocument({
         databaseId: this.databaseId,
@@ -166,6 +181,18 @@ export class DigestsRepo {
 function isNotFound(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   return (err as { code?: number }).code === 404;
+}
+
+function isConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: number; type?: string };
+  return e.code === 409 || e.type === 'document_already_exists';
+}
+
+function digestDocumentId(userId: string, windowStart: string, windowEnd: string): string {
+  const hasher = new Bun.CryptoHasher('sha256');
+  hasher.update(`${userId}|${windowStart}|${windowEnd}`);
+  return hasher.digest('hex').slice(0, 32);
 }
 
 function toDigestRecord(doc: Record<string, unknown> & { $id: string }): DigestRecord {

@@ -10,7 +10,6 @@ import { DigestsRepo } from './digests.repo';
  */
 class FakeDatabases {
   readonly docs = new Map<string, Record<string, unknown> & { $id: string }>();
-  private nextId = 1;
 
   async createDocument(params: {
     databaseId: string;
@@ -18,7 +17,12 @@ class FakeDatabases {
     documentId: string;
     data: Record<string, unknown>;
   }): Promise<Record<string, unknown> & { $id: string }> {
-    const id = `doc-${this.nextId++}`;
+    if (this.docs.has(params.documentId)) {
+      const err = new Error('Document already exists') as Error & { code: number };
+      err.code = 409;
+      throw err;
+    }
+    const id = params.documentId;
     const doc = { $id: id, ...params.data };
     this.docs.set(id, doc);
     return doc;
@@ -56,10 +60,7 @@ class FakeDatabases {
       };
       switch (parsed.method) {
         case 'equal':
-          filters.push([
-            String(parsed.attribute),
-            String((parsed.values ?? [])[0]),
-          ]);
+          filters.push([String(parsed.attribute), String((parsed.values ?? [])[0])]);
           break;
         case 'orderDesc':
           orderAttr = String(parsed.attribute);
@@ -133,6 +134,36 @@ describe('DigestsRepo.create', () => {
     const stored = db.docs.get(result.id);
     expect(typeof stored?.createdAt).toBe('string');
   });
+
+  it('is idempotent — a second create with the same window returns the existing row', async () => {
+    const { repo, db } = makeRepo();
+    const first = await repo.create(BASE_INPUT);
+    const second = await repo.create({ ...BASE_INPUT, markdown: '## different' });
+    expect(second.id).toBe(first.id);
+    expect(second.markdown).toBe('## hi');
+    expect(db.docs.size).toBe(1);
+  });
+
+  it('uses a deterministic document id based on userId + window bounds', async () => {
+    const { repo: repo1 } = makeRepo();
+    const { repo: repo2 } = makeRepo();
+    const a = await repo1.create(BASE_INPUT);
+    const b = await repo2.create(BASE_INPUT);
+    expect(a.id).toBe(b.id);
+  });
+
+  it('treats type=document_already_exists (without code) as idempotent success', async () => {
+    const { repo, db } = makeRepo();
+    const first = await repo.create(BASE_INPUT);
+    db.createDocument = (async () => {
+      const err = new Error('Document already exists') as Error & { type: string };
+      err.type = 'document_already_exists';
+      throw err;
+    }) as FakeDatabases['createDocument'];
+    const second = await repo.create({ ...BASE_INPUT, markdown: '## different' });
+    expect(second.id).toBe(first.id);
+    expect(second.markdown).toBe('## hi');
+  });
 });
 
 describe('DigestsRepo.findByIdAndUser', () => {
@@ -161,15 +192,23 @@ describe('DigestsRepo.findByIdAndUser', () => {
 describe('DigestsRepo.listByUser', () => {
   it('returns rows newest first for the given user', async () => {
     const { repo } = makeRepo();
-    // Seed three rows with distinct createdAt via sequential awaits.
-    // FakeDatabases' createDocument stamps incrementing ids, and the
-    // repo writes `new Date().toISOString()` at insert time, so the
-    // rows end up ordered by insertion time.
-    const a = await repo.create(BASE_INPUT);
+    const a = await repo.create({
+      ...BASE_INPUT,
+      windowStart: '2026-04-01T00:00:00.000Z',
+      windowEnd: '2026-04-02T00:00:00.000Z',
+    });
     await new Promise((r) => setTimeout(r, 2));
-    const b = await repo.create(BASE_INPUT);
+    const b = await repo.create({
+      ...BASE_INPUT,
+      windowStart: '2026-04-02T00:00:00.000Z',
+      windowEnd: '2026-04-03T00:00:00.000Z',
+    });
     await new Promise((r) => setTimeout(r, 2));
-    const c = await repo.create(BASE_INPUT);
+    const c = await repo.create({
+      ...BASE_INPUT,
+      windowStart: '2026-04-03T00:00:00.000Z',
+      windowEnd: '2026-04-04T00:00:00.000Z',
+    });
 
     const result = await repo.listByUser({ userId: 'u1', limit: 10 });
     expect(result.items.map((i) => i.id)).toEqual([c.id, b.id, a.id]);
@@ -190,7 +229,11 @@ describe('DigestsRepo.listByUser', () => {
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 2));
-      const row = await repo.create(BASE_INPUT);
+      const row = await repo.create({
+        ...BASE_INPUT,
+        windowStart: `2026-04-0${i + 1}T00:00:00.000Z`,
+        windowEnd: `2026-04-0${i + 2}T00:00:00.000Z`,
+      });
       ids.push(row.id);
     }
     const expectedNewestFirst = [...ids].reverse();
